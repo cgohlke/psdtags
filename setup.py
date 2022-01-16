@@ -15,7 +15,7 @@ version = re.search(r"__version__ = '(.*?)'", code).groups()[0]
 description = re.search(r'"""(.*)\.(?:\r\n|\r|\n)', code).groups()[0]
 
 readme = re.search(
-    r'(?:\r\n|\r|\n){2}"""(.*)"""(?:\r\n|\r|\n){2}from',
+    r'(?:\r\n|\r|\n){2}"""(.*)"""(?:\r\n|\r|\n){2}[__version__|from]',
     code,
     re.MULTILINE | re.DOTALL,
 ).groups()[0]
@@ -56,7 +56,7 @@ setup(
     packages=['psdtags'],
     entry_points={'console_scripts': ['psdtags = psdtags.psdtags:main']},
     python_requires='>=3.8',
-    install_requires=['numpy>=1.21.2'],
+    install_requires=['numpy>=1.19.2'],
     extras_require={
         'all': [
             'matplotlib>=3.3',
