@@ -53,7 +53,9 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :License: BSD 3-Clause
 
-:Version: 2022.1.14
+:Version: 2022.1.18
+
+:Status: Alpha
 
 Requirements
 ------------
@@ -69,6 +71,12 @@ This release has been tested with the following requirements and dependencies
 
 Revisions
 ---------
+2022.1.18
+    Various API changes (breaking).
+    Various fixes for writing TiffImageSourceData.
+    Support filter masks.
+    Add option to change channel compression on write.
+    Warn when skipping ResourceKey sections.
 2022.1.14
     Initial release.
 
@@ -79,6 +87,8 @@ The API is not stable yet and might change between revisions.
 
 This module has been tested with a limited number of files only.
 
+Additional layer information is not yet supported.
+
 Consider `psd-tools <https://github.com/psd-tools/psd-tools>`_ and
 `pytoshop <https://github.com/mdboom/pytoshop>`_  for working with
 Adobe Photoshop PSD files.
@@ -88,11 +98,11 @@ Examples
 Read the ImageSourceData tag value from a layered TIFF file and iterate over
 all the channels:
 
->>> isd = TiffImageSourceData.fromtiff('LayeredTiff.tif')
->>> for layer in isd.layers:
+>>> psd = TiffImageSourceData.fromtiff('layered.tif')
+>>> for layer in psd.layers:
 ...     layer.name
 ...     for channel in layer.channels:
-...         ch = channel.data
+...         ch = channel.data  # a numpy array
 'Background'
 'Reflect1'
 'Reflect2'
@@ -103,36 +113,58 @@ all the channels:
 'IShadow'
 'O'
 
+Write the image and ImageSourceData to a new layered TIFF file:
+
+>>> from tifffile import imread, imwrite
+>>> image = imread('layered.tif')
+>>> imwrite(
+...     '_layered.tif',
+...     image,
+...     byteorder=psd.byteorder,  # must match ImageSourceData
+...     photometric='rgb',  # must match ImageSourceData
+...     metadata=None,  # do not write any tifffile specific metadata
+...     extratags=[psd.tifftag()],
+... )
+
+Verify that the new layered TIFF file contains readable ImageSourceData:
+
+>>> assert psd == TiffImageSourceData.fromtiff('_layered.tif')
+
 To view the layer and mask information in a layered TIFF file from a
 command line, run::
 
-    python -m psdtags LayeredTiff.tif
+    python -m psdtags layered.tif
 
 """
 
 from __future__ import annotations
 
-__version__ = '2022.1.14'
+__version__ = '2022.1.18'
 
 __all__ = [
-    # 'TiffImageResources',  # not implemented yet
-    'TiffImageSourceData',
-    'PsdFormat',
-    'PsdLayers',
-    'PsdLayer',
-    'PsdLayerMask',
-    'PsdUserMask',
-    'PsdChannel',
-    'PsdResourceKey',
-    'PsdChannelId',
     'PsdBlendMode',
-    'PsdColorSpaceType',
+    'PsdChannel',
+    'PsdChannelId',
     'PsdClippingType',
+    'PsdColorSpaceType',
     'PsdCompressionType',
+    'PsdFilterMask',
+    'PsdFormat',
+    'PsdFormatSignatures',
+    'PsdImageModes',
+    'PsdLayer',
     'PsdLayerFlags',
+    'PsdLayerMask',
     'PsdLayerMaskFlags',
     'PsdLayerMaskParameterFlags',
+    'PsdLayers',
+    'PsdRectangle',
+    'PsdResourceKey',
+    'PsdUserMask',
+    'TiffImageSourceData',
+    'read_tifftag',
 ]
+
 
 import sys
 import os
@@ -144,7 +176,7 @@ import dataclasses
 
 import numpy
 
-from typing import Any, BinaryIO, Literal, Iterable
+from typing import Any, BinaryIO, Literal, Iterable, NamedTuple
 
 
 class BytesEnumMeta(enum.EnumMeta):
@@ -426,6 +458,16 @@ class PsdFormatSignatures(bytes, enum.Enum):
     LE64BIT = b'46B8'
 
 
+class PsdRectangle(NamedTuple):
+    top: int
+    left: int
+    bottom: int
+    right: int
+
+    def __str__(self) -> str:
+        return str(tuple(self))
+
+
 class PsdFormat:
     """PSD format."""
 
@@ -436,7 +478,7 @@ class PsdFormat:
     sizeformat: str
 
     def __init__(
-        self, signature: PsdFormat | PsdFormatSignatures | bytes
+        self, signature: PsdFormat | PsdFormatSignatures | bytes = b'8BIM'
     ) -> None:
         if isinstance(signature, PsdFormat):
             self.signature = signature.signature
@@ -491,10 +533,11 @@ class PsdFormat:
 class TiffImageSourceData:
     """TIFF ImageSourceData tag #37724."""
 
-    psd: PsdFormat
-    name: str
+    psdformat: PsdFormat
+    name: str | None = None
     layers: PsdLayers | None = None
     usermask: PsdUserMask | None = None
+    info: list[Any] = dataclasses.field(default_factory=list)
 
     SIGNATURE = b'Adobe Photoshop Document Data Block\0'
 
@@ -502,6 +545,7 @@ class TiffImageSourceData:
     def fromfile(
         cls,
         fh: BinaryIO,
+        /,
         name: str | None = None,
         skipsign: bool = False,
     ) -> TiffImageSourceData:
@@ -515,48 +559,60 @@ class TiffImageSourceData:
 
         signature = fh.read(4)
         if len(signature) == 0:
-            return cls(psd=PsdFormat(PsdFormatSignatures.BE32BIT), name=name)
-        psd = PsdFormat(signature)
+            return cls(psdformat=PsdFormat(), name=name)
+        psdformat = PsdFormat(signature)
         fh.seek(-4, 1)
 
         layers = None
         usermask = None
+        info = []
 
-        while fh.read(4) == psd.signature:
-            key = PsdResourceKey(fh.read(4))
-            size: int = psd.read(fh)
-            size += fh.tell()
+        while fh.read(4) == psdformat.signature:
+            resourcekey = PsdResourceKey(fh.read(4))
+            size: int = psdformat.read(fh)
+            pos = fh.tell()
 
-            if key in PsdLayer.KEYS and not layers:
-                layers = PsdLayers.fromfile(fh, psd, key)
-            elif key in PsdUserMask.KEYS and not usermask:
-                usermask = PsdUserMask.fromfile(fh, psd, key)
-            # According to the TIFF Technical Notes, ImageResourceData may
-            # contain Patterns and Annotations sections. None of the sample
-            # files available contain these sections.
-            # elif key in PsdPatterns.KEYS and not patterns:
-            #     patterns = PsdPatterns.fromfile(fh, psd, key)
-            # elif key in PsdAnnotations.KEYS and not annotations:
-            #     annotations = PsdAnnotations.fromfile(fh, psd, key)
-            elif key in (
-                PsdResourceKey.SAVING_MERGED_TRANSPARENCY,
-                PsdResourceKey.SAVING_MERGED_TRANSPARENCY2,
-                PsdResourceKey.SAVING_MERGED_TRANSPARENCY_16,
-                PsdResourceKey.SAVING_MERGED_TRANSPARENCY_32,
-            ):
-                # TODO:
-                pass
-            if size - fh.tell() > 4:
+            if resourcekey in PsdLayers.TYPES and not layers:
+                layers = PsdLayers.fromfile(fh, psdformat, resourcekey)
+            elif resourcekey == PsdResourceKey.USER_MASK and not usermask:
+                usermask = PsdUserMask.fromfile(fh, psdformat)
+            elif resourcekey == PsdResourceKey.FILTER_MASK:
+                info.append(PsdFilterMask.fromfile(fh, psdformat))
+            # TODO:
+            # elif resourcekey in PsdPatterns.KEYS and not patterns:
+            #     patterns = PsdPatterns.fromfile(fh, psdformat, resourcekey)
+            # elif resourcekey == PsdResourceKey.TEXT_ENGINE_DATA:
+            #    pass  # b'Txt2'
+            # elif resourcekey == sdResourceKey.COMPOSITOR_INFO:
+            #    pass  # b'cinf'
+            # elif resourcekey == PsdResourceKey.LINKED_LAYER_2:
+            #    pass  # b'lnk2'
+            # elif resourcekey in (
+            #     PsdResourceKey.SAVING_MERGED_TRANSPARENCY,
+            #     PsdResourceKey.SAVING_MERGED_TRANSPARENCY2,
+            #     PsdResourceKey.SAVING_MERGED_TRANSPARENCY_16,
+            #     PsdResourceKey.SAVING_MERGED_TRANSPARENCY_32,
+            # ):
+            #     pass  # what to do with these?
+            elif size > 0:
                 log_warning(
-                    f'skipping content in {key.value.decode()!r} section'
+                    f"<TiffImageSourceData '{name}'>"
+                    f" skipped {size} bytes {resourcekey.value.decode()!r} section"
                 )
-            fh.seek(size)
+            size += (4 - size % 4) % 4
+            fh.seek(pos + size)
 
-        return cls(psd=psd, name=name, layers=layers, usermask=usermask)
+        return cls(
+            psdformat=psdformat,
+            name=name,
+            layers=layers,
+            usermask=usermask,
+            info=info,
+        )
 
     @classmethod
     def frombytes(
-        cls, data: bytes, name: str | None = None
+        cls, data: bytes, /, name: str | None = None
     ) -> TiffImageSourceData:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
@@ -565,58 +621,78 @@ class TiffImageSourceData:
 
     @classmethod
     def fromtiff(
-        cls, filename: os.PathLike | str, page: int = 0
+        cls, filename: os.PathLike | str, /, pageindex: int = 0
     ) -> TiffImageSourceData:
         """Return instance from TIFF file."""
-        data = read_tifftag(filename, 37724, page=page)
+        data = read_tifftag(filename, 37724, pageindex=pageindex)
         return cls.frombytes(data, name=os.path.split(filename)[-1])
 
     def write(
         self,
         fh: BinaryIO,
-        psd: PsdFormat | PsdFormatSignatures | bytes | None = None,
+        /,
+        psdformat: PsdFormat | PsdFormatSignatures | bytes | None = None,
+        compression: PsdCompressionType | int | None = None,
         skipsign: bool = False,
     ) -> int:
         """Write ImageResourceData tag value to open file."""
-        psd = self.psd if psd is None else PsdFormat(psd)
+        psdformat = (
+            self.psdformat if psdformat is None else PsdFormat(psdformat)
+        )
 
         start = fh.tell()
         if not skipsign:
             fh.write(TiffImageSourceData.SIGNATURE)
 
-        for section in (self.layers, self.usermask):
+        for section in (self.layers, self.usermask, *self.info):
             if section is None:
                 continue
-            fh.write(psd.signature)
-            fh.write(section.key)
+            fh.write(psdformat.signature)
+            fh.write(section.resourcekey.tobytes(psdformat.byteorder))
             size_pos = fh.tell()
-            psd.write(fh, None, 0)
+            psdformat.write(fh, None, 0)
             pos = fh.tell()
-            section.write(fh, psd)
+            if section is self.layers:
+                section.write(
+                    fh, psdformat, compression=compression
+                )  # type: ignore
+            else:
+                section.write(fh, psdformat)
             size = fh.tell() - pos
             fh.seek(size_pos)
-            psd.write(fh, None, size)
+            psdformat.write(fh, None, size)
+            size += (4 - size % 4) % 4
             fh.seek(size, 1)
 
         return fh.tell() - start
 
+    @property
+    def byteorder(self):
+        return self.psdformat.byteorder
+
     def tobytes(
         self,
-        psd: PsdFormat | PsdFormatSignatures | bytes | None = None,
+        /,
+        psdformat: PsdFormat | PsdFormatSignatures | bytes | None = None,
+        compression: PsdCompressionType | int | None = None,
         skipsign: bool = False,
     ) -> bytes:
         """Return ImageResourceData tag value as bytes."""
         with io.BytesIO() as fh:
-            self.write(fh, psd, skipsign)
+            self.write(
+                fh, psdformat, compression=compression, skipsign=skipsign
+            )
             value = fh.getvalue()
         return value
 
     def tifftag(
         self,
-        psd: PsdFormat | PsdFormatSignatures | bytes | None = None,
+        /,
+        psdformat: PsdFormat | PsdFormatSignatures | bytes | None = None,
+        compression: PsdCompressionType | int | None = None,
     ) -> tuple[int, int, int, bytes, bool]:
         """Return tifffile.TiffWriter.write extratags item."""
-        value = self.tobytes(psd)
+        value = self.tobytes(psdformat, compression=compression)
         return 37724, 7, len(value), value, True
 
     def __eq__(self, other: object) -> bool:
@@ -624,8 +700,9 @@ class TiffImageSourceData:
             isinstance(other, self.__class__)
             and self.usermask == other.usermask
             and self.layers == other.layers
+            and self.info == other.info
             # and self.name == other.name
-            # and self.psd == other.psd
+            # and self.psdformat == other.psdformat
         )
 
     def __bool__(self) -> bool:
@@ -635,13 +712,14 @@ class TiffImageSourceData:
         return f'<{self.__class__.__name__} {self.name!r}>'
 
     def __str__(self) -> str:
-        if not self.psd:
+        if not self.psdformat:
             return repr(self)
-        info = [repr(self), repr(self.psd)]
+        info = [repr(self), repr(self.psdformat)]
         if self.layers is not None:
             info.append(str(self.layers))
         if self.usermask is not None:
             info.append(str(self.usermask))
+        info.extend(self.info)
         return indent(*info)
 
 
@@ -649,26 +727,32 @@ class TiffImageSourceData:
 class PsdLayers:
     """Sequence of PsdLayer."""
 
-    key: PsdResourceKey = PsdResourceKey.LAYER
+    resourcekey: PsdResourceKey
     layers: list[PsdLayer] = dataclasses.field(default_factory=list)
     has_transparency: bool = False
 
+    TYPES = {
+        PsdResourceKey.LAYER: 'B',
+        PsdResourceKey.LAYER_16: 'H',
+        PsdResourceKey.LAYER_32: 'f',
+    }
+
     @classmethod
     def fromfile(
-        cls, fh: BinaryIO, psd: PsdFormat, key: PsdResourceKey
+        cls, fh: BinaryIO, psdformat: PsdFormat, resourcekey: PsdResourceKey
     ) -> PsdLayers:
         """Return instance from open file."""
-        count = psd.read(fh, 'h')
+        count = psdformat.read(fh, 'h')
         has_transparency = count < 0
         count = abs(count)
 
         # layer records
         layers = []
         for _ in range(count):
-            layers.append(PsdLayer.fromfile(fh, psd))
+            layers.append(PsdLayer.fromfile(fh, psdformat))
 
         # channel image data
-        dtype = PsdLayer.KEYS[key]
+        dtype = PsdLayers.TYPES[resourcekey]
         shape: tuple[int, ...] = ()
         for layer in layers:
             for channel in layer.channels:
@@ -676,46 +760,61 @@ class PsdLayers:
                     shape = layer.mask.shape
                 else:
                     shape = layer.shape
-                channel.read_image(fh, psd, shape, dtype)
+                channel.read_image(fh, psdformat, shape, dtype)
 
-        return cls(key=key, layers=layers, has_transparency=has_transparency)
+        return cls(
+            resourcekey=resourcekey,
+            layers=layers,
+            has_transparency=has_transparency,
+        )
 
     @classmethod
     def frombytes(
-        cls, data: bytes, psd: PsdFormat, key: PsdResourceKey
+        cls, data: bytes, psdformat: PsdFormat, resourcekey: PsdResourceKey
     ) -> PsdLayers:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.fromfile(fh, psd, key)
+            self = cls.fromfile(fh, psdformat, resourcekey)
         return self
 
-    def write(self, fh: BinaryIO, psd: PsdFormat) -> int:
+    def write(
+        self,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        /,
+        compression: PsdCompressionType | int | None = None,
+    ) -> int:
         """Write layer records and channel info data to open file."""
         pos = fh.tell()
         # channel count
-        psd.write(
+        psdformat.write(
             fh, 'h', (-1 if self.has_transparency else 1) * len(self.layers)
         )
         # layer records
         channel_image_data = []
         for layer in self.layers:
-            data = layer.write(fh, psd)
+            data = layer.write(fh, psdformat, compression=compression)
             channel_image_data.append(data)
         # channel info data
         for data in channel_image_data:
             fh.write(data)
-        return fh.tell() - pos
+        size = fh.tell() - pos
+        if size % 2:
+            # length of layers info section must be multiple of 2
+            fh.seek(1, 1)
+            size += 1
+        return size
 
-    def tobytes(self, psd: PsdFormat) -> bytes:
+    def tobytes(self, psdformat: PsdFormat) -> bytes:
         """Return layer records and channel info data."""
         with io.BytesIO() as fh:
-            self.write(fh, psd)
+            self.write(fh, psdformat)
             value = fh.getvalue()
         return value
 
     @property
-    def dtype(self) -> str:
-        return PsdLayer.KEYS[self.key]
+    def dtype(self) -> numpy.dtype:
+        return numpy.dtype(PsdLayers.TYPES[self.resourcekey])
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -747,7 +846,7 @@ class PsdLayers:
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, self.__class__)
-            # and self.key == other.key
+            and self.resourcekey == other.resourcekey
             and self.has_transparency == other.has_transparency
             and self.layers == other.layers
         )
@@ -755,7 +854,7 @@ class PsdLayers:
     def __repr__(self) -> str:
         return (
             f'<{self.__class__.__name__} '
-            f'{self.key.value.decode()}[{len(self)}]>'
+            f'{self.resourcekey.value.decode()}[{len(self)}]>'
         )
 
     def __str__(self) -> str:
@@ -775,56 +874,57 @@ class PsdLayer:
 
     name: str
     channels: list[PsdChannel]
-    mask: PsdLayerMask | None
-    rect: tuple[int, int, int, int]
-    opacity: int
+    rect: PsdRectangle
+    mask: PsdLayerMask | None = None
+    opacity: int = 255
     blendmode: PsdBlendMode = PsdBlendMode.NORMAL
     blending_ranges: tuple[int, ...] = ()
     clipping: PsdClippingType = PsdClippingType(0)
     flags: PsdLayerFlags = PsdLayerFlags(0)
-
-    KEYS = {
-        b'Layr': 'u1',
-        b'Lr16': 'u2',
-        b'Lr32': 'f4',
-    }
+    info: list[Any] = dataclasses.field(default_factory=list)
 
     @classmethod
-    def fromfile(cls, fh: BinaryIO, psd: PsdFormat) -> PsdLayer:
+    def fromfile(cls, fh: BinaryIO, psdformat: PsdFormat) -> PsdLayer:
         """Return instance from open file.
 
         Channel image data must be read separately.
 
         """
-        rect = psd.read(fh, 'iiii')
-        count = psd.read(fh, 'H')
+        rect = PsdRectangle(*psdformat.read(fh, 'iiii'))
+        count = psdformat.read(fh, 'H')
         channels = []
         for _ in range(count):
-            channels.append(PsdChannel.fromfile(fh, psd))
+            channels.append(PsdChannel.fromfile(fh, psdformat))
 
-        assert fh.read(4) == psd.signature
+        assert fh.read(4) == psdformat.signature
         blendmode = PsdBlendMode(fh.read(4))
         opacity = fh.read(1)[0]
         clipping = PsdClippingType(fh.read(1)[0])
         flags = PsdLayerFlags(fh.read(1)[0])
         assert fh.read(1)[0] == 0  # filler
 
-        extra_size = psd.read(fh, 'I')
-        pos = fh.tell()
+        extra_size = psdformat.read(fh, 'I')
+        end = fh.tell() + extra_size
 
         # layer mask data
-        mask = PsdLayerMask.fromfile(fh, psd)
+        mask = PsdLayerMask.fromfile(fh, psdformat)
 
         # layer blending ranges
-        nbytes = psd.read(fh, 'I')
+        nbytes = psdformat.read(fh, 'I')
         assert nbytes % 4 == 0
-        blending_ranges = psd.read(fh, 'i' * (nbytes // 4))
+        blending_ranges = psdformat.read(fh, 'i' * (nbytes // 4))
 
         # layer name is a Pascal string
         strlen = fh.read(1)[0]
         name = fh.read(strlen).decode('macroman')
+        fh.seek((4 - (strlen + 1) % 4) % 4, 1)  # pad to multiple of 4 bytes
 
-        fh.seek(pos + extra_size)
+        info: list[Any] = []
+        # TODO: read additional layer information
+        # while fh.tell() < end:
+        #     info.append(TaggedBlock.fromfile(fh, psdformat))
+
+        fh.seek(end)
 
         return cls(
             name=name,
@@ -836,30 +936,37 @@ class PsdLayer:
             blendmode=blendmode,
             clipping=clipping,
             flags=flags,
+            info=info,
         )
 
     @classmethod
-    def frombytes(cls, data: bytes, psd: PsdFormat) -> PsdLayer:
+    def frombytes(cls, data: bytes, psdformat: PsdFormat) -> PsdLayer:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.fromfile(fh, psd)
+            self = cls.fromfile(fh, psdformat)
         return self
 
-    def write(self, fh: BinaryIO, psd: PsdFormat) -> bytes:
+    def write(
+        self,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        /,
+        compression: PsdCompressionType | int | None = None,
+    ) -> bytes:
         """Write layer record to open file and return channel data records."""
-        psd.write(fh, 'iiii', *self.rect)
-        psd.write(fh, 'H', len(self.channels))
+        psdformat.write(fh, 'iiii', *self.rect)
+        psdformat.write(fh, 'H', len(self.channels))
 
         channel_image_data = []
         for channel in self.channels:
-            data = channel.write(fh, psd)
+            data = channel.write(fh, psdformat, compression=compression)
             channel_image_data.append(data)
 
-        psd.write(
+        psdformat.write(
             fh,
             '4s4sBBBB',
-            psd.signature.value,
-            self.blendmode.value,
+            psdformat.signature.value,
+            self.blendmode.tobytes(psdformat.byteorder),
             self.opacity,
             self.clipping.value,
             self.flags,
@@ -867,51 +974,55 @@ class PsdLayer:
         )
 
         extra_size_pos = fh.tell()
-        psd.write(fh, 'I', 0)  # placeholder
+        psdformat.write(fh, 'I', 0)  # placeholder
         pos = fh.tell()
 
         # layer mask data
         if self.mask is None:
-            psd.write(fh, None, 0)
+            psdformat.write(fh, 'I', 0)
         else:
-            self.mask.write(fh, psd)
+            size = self.mask.write(fh, psdformat)
+            assert size in (4, 24, 40)
 
         # layer blending ranges
-        psd.write(fh, 'I', len(self.blending_ranges) * 4)
-        psd.write(fh, 'i' * len(self.blending_ranges), *self.blending_ranges)
-
-        # layer name is a Pascal string
-        psd.write(
-            fh,
-            f'B{len(self.name)}s',
-            len(self.name),
-            self.name.encode('macroman'),
+        psdformat.write(fh, 'I', len(self.blending_ranges) * 4)
+        psdformat.write(
+            fh, 'i' * len(self.blending_ranges), *self.blending_ranges
         )
 
+        # layer name is a Pascal string
+        name = self.name[:255]
+        strlen = len(name)
+        psdformat.write(fh, f'B{strlen}s', strlen, name.encode('macroman'))
+        fh.seek((4 - (strlen + 1) % 4) % 4, 1)  # pad to multiple of 4 bytes
+
+        # TODO: write additional layer information
+        # for tag in self.info:
+        #     tag.write(fh, psdformat)
+
         extra_size = fh.tell() - pos
-        extra_size += (4 - extra_size % 4) % 4  # pad to multiple of 4 bytes
         fh.seek(extra_size_pos)
-        psd.write(fh, 'I', extra_size)
+        psdformat.write(fh, 'I', extra_size)
         fh.seek(extra_size, 1)
 
         return b''.join(channel_image_data)
 
-    def tobytes(self, psd: PsdFormat) -> tuple[bytes, bytes]:
+    def tobytes(self, psdformat: PsdFormat) -> tuple[bytes, bytes]:
         """Return layer and channel data records."""
         with io.BytesIO() as fh:
-            channel_image_data = self.write(fh, psd)
+            channel_image_data = self.write(fh, psdformat)
             layer_record = fh.getvalue()
         return layer_record, channel_image_data
 
     def asarray(
-        self, key: bytes | None = None, planar: bool = False
+        self, channelid: bytes | None = None, planar: bool = False
     ) -> numpy.ndarray:
         """Return channel image data as numpy array."""
-        if key is not None:
+        if channelid is not None:
             datalist = [
                 channel.data
                 for channel in self.channels
-                if channel.channelid == key and channel.data is not None
+                if channel.channelid == channelid and channel.data is not None
             ]
         else:
             datalist = [
@@ -935,11 +1046,14 @@ class PsdLayer:
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self.rect[2] - self.rect[0], self.rect[3] - self.rect[1]
+        return (
+            self.rect.bottom - self.rect.top,
+            self.rect.right - self.rect.left,
+        )
 
     @property
     def offset(self) -> tuple[int, int]:
-        return self.rect[:2]
+        return self.rect.top, self.rect.left
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -959,14 +1073,14 @@ class PsdLayer:
     def __str__(self) -> str:
         return indent(
             repr(self),
-            f'rect: {self.rect!r}',
+            f'rect: {self.rect}',
             f'opacity: {self.opacity}',
             f'blendmode: {self.blendmode.name}',
             f'clipping: {self.clipping.name}',
             f'flags: {str(self.flags)}',
-            f'channels: {len(self.channels)}',
-            *self.channels,
-            f'{self.mask}',
+            indent(f'channels[{len(self.channels)}]', *self.channels),
+            self.mask,
+            *self.info,
         )
 
 
@@ -975,49 +1089,50 @@ class PsdChannel:
     """Channel info and data."""
 
     channelid: PsdChannelId
-    compression: PsdCompressionType = PsdCompressionType(-1)
+    compression: PsdCompressionType = PsdCompressionType.RAW
     data: numpy.ndarray | None = None
     _data_length: int = 0
 
     @classmethod
-    def fromfile(cls, fh: BinaryIO, psd: PsdFormat) -> PsdChannel:
+    def fromfile(cls, fh: BinaryIO, psdformat: PsdFormat) -> PsdChannel:
         """Return instance from open file.
 
         Channel image data must be read separately using read_image.
 
         """
-        channelid = PsdChannelId(psd.read(fh, 'h'))
-        data_length = psd.read(fh)
+        channelid = PsdChannelId(psdformat.read(fh, 'h'))
+        data_length = psdformat.read(fh)
         return cls(channelid=channelid, _data_length=data_length)
 
     @classmethod
-    def frombytes(cls, data: bytes, psd: PsdFormat) -> PsdChannel:
+    def frombytes(cls, data: bytes, psdformat: PsdFormat) -> PsdChannel:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.fromfile(fh, psd)
+            self = cls.fromfile(fh, psdformat)
         return self
 
     def read_image(
         self,
         fh: BinaryIO,
-        psd: PsdFormat,
+        psdformat: PsdFormat,
         shape: tuple[int, ...],
         dtype: numpy.dtype | str,
     ) -> None:
-        """Read channel image data from file."""
+        """Read channel image data from open file."""
         if self.data is not None:
             raise RuntimeError
 
-        compression = psd.read(fh, 'H')
+        compression = psdformat.read(fh, 'H')
         self.compression = PsdCompressionType(compression)
 
         data = fh.read(self._data_length - 2)
-        dtype = numpy.dtype(dtype).newbyteorder(psd.byteorder)
+        dtype = numpy.dtype(dtype).newbyteorder(psdformat.byteorder)
         uncompressed_size = product(shape) * dtype.itemsize
-        # if self._data_length % 2:
-        #    fh.seek(1, 1)
 
-        if compression == PsdCompressionType.RAW:
+        if uncompressed_size == 0:
+            image = numpy.zeros(shape, dtype=dtype)
+
+        elif compression == PsdCompressionType.RAW:
             image = numpy.frombuffer(data, dtype=dtype).reshape(shape)
 
         elif compression == PsdCompressionType.ZIP:
@@ -1037,15 +1152,19 @@ class PsdChannel:
         elif compression == PsdCompressionType.RLE:
             import imagecodecs
 
-            offset = shape[0] * (2 if psd.sizeformat[-1] == 'I' else 4)
+            offset = shape[0] * (2 if psdformat.sizeformat[-1] == 'I' else 4)
             data = imagecodecs.packbits_decode(data[offset:])
             image = numpy.frombuffer(data, dtype=dtype).reshape(shape)
+
+        else:
+            raise ValueError('unknown compression type')
 
         self.data = image
 
     def tobytes(
         self,
-        psd: PsdFormat,
+        psdformat: PsdFormat,
+        /,
         compression: PsdCompressionType | int | None = None,
     ) -> tuple[bytes, bytes]:
         """Return channel info and image data records."""
@@ -1055,12 +1174,17 @@ class PsdChannel:
             compression = self.compression
         else:
             compression = PsdCompressionType(compression)
-        channel_image_data = psd.pack('H', compression)
+        channel_image_data = psdformat.pack('H', compression)
 
-        dtype = self.data.dtype.newbyteorder(psd.byteorder)
+        dtype = self.data.dtype.newbyteorder(psdformat.byteorder)
+        if dtype.char not in PsdLayers.TYPES.values():
+            raise ValueError(f'dtype {dtype!r} not supported')
         data = numpy.asarray(self.data, dtype=dtype)
 
-        if compression == PsdCompressionType.RAW:
+        if data.size == 0:
+            pass
+
+        elif compression == PsdCompressionType.RAW:
             channel_image_data += data.tobytes()
 
         elif compression == PsdCompressionType.ZIP:
@@ -1069,7 +1193,7 @@ class PsdChannel:
         elif compression == PsdCompressionType.ZIP_PREDICTED:
             import imagecodecs
 
-            if self.data.dtype.kind == 'f':
+            if dtype.char == 'f':
                 data = imagecodecs.floatpred_encode(data)
             else:
                 data = imagecodecs.delta_encode(data)
@@ -1080,18 +1204,31 @@ class PsdChannel:
 
             lines = [imagecodecs.packbits_encode(line) for line in data]
             sizes = [len(line) for line in lines]
-            fmt = f'{len(sizes)}' + ('H' if psd.sizeformat[-1] == 'I' else 'I')
+            fmt = f'{psdformat.byteorder}{len(sizes)}' + (
+                'H' if psdformat.sizeformat[-1] == 'I' else 'I'
+            )
             channel_image_data += struct.pack(fmt, *sizes)
             channel_image_data += b''.join(lines)
 
-        channel_info = psd.pack('h', self.channelid)
-        channel_info += psd.pack(None, len(channel_image_data))
+        else:
+            raise ValueError('unknown compression type')
+
+        channel_info = psdformat.pack('h', self.channelid)
+        channel_info += psdformat.pack(None, len(channel_image_data))
 
         return channel_info, channel_image_data
 
-    def write(self, fh: BinaryIO, psd: PsdFormat) -> bytes:
+    def write(
+        self,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        /,
+        compression: PsdCompressionType | int | None = None,
+    ) -> bytes:
         """Write channel info record to file and return image data record."""
-        channel_info, channel_image_data = self.tobytes(psd)
+        channel_info, channel_image_data = self.tobytes(
+            psdformat, compression=compression
+        )
         fh.write(channel_info)
         return channel_image_data
 
@@ -1114,8 +1251,8 @@ class PsdChannel:
 class PsdLayerMask:
     """Layer mask / adjustment layer data."""
 
-    color: int = 0
-    rect: tuple[int, int, int, int] | None = None
+    default_color: int = 0
+    rect: PsdRectangle | None = None
     flags: PsdLayerMaskFlags = PsdLayerMaskFlags(0)
     user_mask_density: int | None = None
     user_mask_feather: float | None = None
@@ -1123,17 +1260,17 @@ class PsdLayerMask:
     vector_mask_feather: float | None = None
     real_flags: PsdLayerMaskFlags | None = None
     real_background: int | None = None
-    real_rect: tuple[int, int, int, int] | None = None
+    real_rect: PsdRectangle | None = None
 
     @classmethod
-    def fromfile(cls, fh: BinaryIO, psd: PsdFormat) -> PsdLayerMask:
+    def fromfile(cls, fh: BinaryIO, psdformat: PsdFormat) -> PsdLayerMask:
         """Return instance from open file."""
-        size = psd.read(fh)
+        size = psdformat.read(fh, 'I')
         if size == 0:
             return cls()
 
-        rect = psd.read(fh, 'iiii')
-        color = fh.read(1)[0]
+        rect = PsdRectangle(*psdformat.read(fh, 'iiii'))
+        default_color = fh.read(1)[0]
         flags = PsdLayerMaskFlags(fh.read(1)[0])
 
         user_mask_density = None
@@ -1145,11 +1282,11 @@ class PsdLayerMask:
             if param_flags & PsdLayerMaskParameterFlags.USER_DENSITY:
                 user_mask_density = fh.read(1)[0]
             if param_flags & PsdLayerMaskParameterFlags.USER_FEATHER:
-                user_mask_feather = psd.read(fh, 'd')
+                user_mask_feather = psdformat.read(fh, 'd')
             if param_flags & PsdLayerMaskParameterFlags.VECTOR_DENSITY:
                 vector_mask_density = fh.read(1)[0]
             if param_flags & PsdLayerMaskParameterFlags.VECTOR_FEATHER:
-                vector_mask_feather = psd.read(fh, 'd')
+                vector_mask_feather = psdformat.read(fh, 'd')
 
         if size == 20:
             fh.seek(2, 1)  # padding
@@ -1159,11 +1296,11 @@ class PsdLayerMask:
         else:
             real_flags = PsdLayerMaskFlags(fh.read(1)[0])
             real_background = fh.read(1)[0]
-            real_rect = psd.read(fh, 'iiii')
+            real_rect = PsdRectangle(*psdformat.read(fh, 'iiii'))
 
         return cls(
             rect=rect,
-            color=color,
+            default_color=default_color,
             flags=flags,
             user_mask_density=user_mask_density,
             user_mask_feather=user_mask_feather,
@@ -1175,46 +1312,50 @@ class PsdLayerMask:
         )
 
     @classmethod
-    def frombytes(cls, data: bytes, psd: PsdFormat) -> PsdLayerMask:
+    def frombytes(cls, data: bytes, psdformat: PsdFormat) -> PsdLayerMask:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.fromfile(fh, psd)
+            self = cls.fromfile(fh, psdformat)
         return self
 
-    def tobytes(self, psd: PsdFormat) -> bytes:
+    def tobytes(self, psdformat: PsdFormat) -> bytes:
         """Return layer mask structure."""
         if self.rect is None:
-            return psd.pack(None, 0)
+            return psdformat.pack('I', 0)
 
         flags = self.flags
         param_flags = self.param_flags
         if param_flags:
             flags = flags | 0b1000
 
-        data = psd.pack('iiii', *self.rect)
-        data += psd.pack('BB', self.color, flags)
+        data = psdformat.pack('iiii', *self.rect)
+        data += psdformat.pack('B', 255 if self.default_color else 0)
+        data += psdformat.pack('B', flags)
         if param_flags:
-            data += psd.pack('B', param_flags)
+            data += psdformat.pack('B', param_flags)
             if self.user_mask_density is not None:
-                data += psd.pack('B', self.user_mask_density)
+                data += psdformat.pack('B', self.user_mask_density)
             if self.user_mask_feather is not None:
-                data += psd.pack('d', self.user_mask_feather)
+                data += psdformat.pack('d', self.user_mask_feather)
             if self.vector_mask_density is not None:
-                data += psd.pack('B', self.vector_mask_density)
+                data += psdformat.pack('B', self.vector_mask_density)
             if self.vector_mask_feather is not None:
-                data += psd.pack('d', self.vector_mask_feather)
-            data += psd.pack(
-                'BB4i', self.real_flags, self.real_background, self.real_rect
+                data += psdformat.pack('d', self.vector_mask_feather)
+            assert self.real_flags is not None
+            assert self.real_background is not None
+            assert self.real_rect is not None
+            data += psdformat.pack(
+                'BB4i', self.real_flags, self.real_background, *self.real_rect
             )
         else:
             data += b'\0\0'
             assert len(data) == 20
 
-        return psd.pack(None, len(data)) + data
+        return psdformat.pack('I', len(data)) + data
 
-    def write(self, fh: BinaryIO, psd: PsdFormat) -> int:
+    def write(self, fh: BinaryIO, psdformat: PsdFormat) -> int:
         """Write layer mask structure to open file."""
-        return fh.write(self.tobytes(psd))
+        return fh.write(self.tobytes(psdformat))
 
     @property
     def param_flags(self) -> PsdLayerMaskParameterFlags:
@@ -1233,12 +1374,15 @@ class PsdLayerMask:
     def shape(self) -> tuple[int, int]:
         if self.rect is None:
             return (0, 0)
-        return self.rect[2] - self.rect[0], self.rect[3] - self.rect[1]
+        return (
+            self.rect.bottom - self.rect.top,
+            self.rect.right - self.rect.left,
+        )
 
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, self.__class__)
-            and self.color == other.color
+            and self.default_color == other.default_color
             and self.flags == other.flags
             and self.user_mask_density == other.user_mask_density
             and self.user_mask_feather == other.user_mask_feather
@@ -1259,9 +1403,13 @@ class PsdLayerMask:
     def __str__(self) -> str:
         if self.rect is None:
             return repr(self)
-        info = [repr(self), f'color: {self.color!r}']
+        info = [
+            repr(self),
+            # f'rect: {self.rect}',
+            f'default_color: {self.default_color!r}',
+        ]
         if self.flags:
-            info += [f'flags: {self.flags.name!r}']
+            info += [f'flags: {self.flags!r}']
         if self.user_mask_density is not None:
             info += [f'user_mask_density: {self.user_mask_density}']
         if self.user_mask_feather is not None:
@@ -1272,9 +1420,9 @@ class PsdLayerMask:
             info += [f'vector_mask_feather: {self.vector_mask_feather}']
         if self.real_flags is not None and self.real_background is not None:
             info += [
-                f'real_flags: {self.real_flags.name!r}',
                 f'real_background: {self.real_background!r}',
-                f'real_rect: {self.real_rect!r}',
+                repr(self.real_rect),
+                repr(self.real_flags),
             ]
         return indent(*info)
 
@@ -1284,58 +1432,53 @@ class PsdUserMask:
     """User mask. Same as global layer mask info table."""
 
     colorspace: PsdColorSpaceType = PsdColorSpaceType(-1)
-    values: tuple[int, int, int, int] = (0, 0, 0, 0)
+    components: tuple[int, int, int, int] = (0, 0, 0, 0)
     opacity: int = 0
     flag: int = 128
 
-    KEYS = {b'LMsk'}
+    resourcekey = PsdResourceKey.USER_MASK
 
     @classmethod
-    def fromfile(
-        cls, fh: BinaryIO, psd: PsdFormat, key: bytes | None = None
-    ) -> PsdUserMask:
+    def fromfile(cls, fh: BinaryIO, psdformat: PsdFormat) -> PsdUserMask:
         """Return instance from open file."""
-        colorspace = PsdColorSpaceType(psd.read(fh, 'h'))
+        colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
         fmt = '4h' if colorspace == PsdColorSpaceType.Lab else '4H'
-        values = psd.read(fh, fmt)
-        opacity = psd.read(fh, 'H')
+        components = psdformat.read(fh, fmt)
+        opacity = psdformat.read(fh, 'H')
         flag = fh.read(1)[0]
-        fh.seek(1, 1)
         return cls(
-            colorspace=colorspace, values=values, opacity=opacity, flag=flag
+            colorspace=colorspace,
+            components=components,
+            opacity=opacity,
+            flag=flag,
         )
 
     @classmethod
-    def frombytes(
-        cls, data: bytes, psd: PsdFormat, key: bytes | None = None
-    ) -> PsdUserMask:
+    def frombytes(cls, data: bytes, psdformat: PsdFormat) -> PsdUserMask:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.fromfile(fh, psd, key)
+            self = cls.fromfile(fh, psdformat)
         return self
 
-    def tobytes(self, psd: PsdFormat) -> bytes:
+    def tobytes(self, psdformat: PsdFormat) -> bytes:
         """Return user mask record."""
-        data = psd.pack('h', self.colorspace.value)
+        data = psdformat.pack('h', self.colorspace.value)
         fmt = '4h' if self.colorspace == PsdColorSpaceType.Lab else '4H'
-        data += psd.pack(fmt, *self.values)
-        data += psd.pack('HBx', self.opacity, self.flag)
+        data += psdformat.pack(fmt, *self.components)
+        data += psdformat.pack('HB', self.opacity, self.flag)
+        data += b'\0'
         return data
 
-    def write(self, fh: BinaryIO, psd: PsdFormat) -> int:
+    def write(self, fh: BinaryIO, psdformat: PsdFormat) -> int:
         """Write user mask record to open file."""
-        return fh.write(self.tobytes(psd))
-
-    @property
-    def key(self) -> bytes:
-        return PsdResourceKey.USER_MASK
+        return fh.write(self.tobytes(psdformat))
 
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, self.__class__)
             and self.colorspace == other.colorspace
             and self.opacity == other.opacity
-            and self.values == other.values
+            and self.components == other.components
         )
 
     def __repr__(self) -> str:
@@ -1344,9 +1487,70 @@ class PsdUserMask:
     def __str__(self) -> str:
         return indent(
             repr(self),
-            f'values: {self.values}',
+            f'components: {self.components}',
             f'opacity: {self.opacity}',
             f'flag: {self.flag}',  # always 128
+        )
+
+
+@dataclasses.dataclass(repr=False)
+class PsdFilterMask:
+    """Filter Mask (Photoshop CS3)."""
+
+    colorspace: PsdColorSpaceType
+    components: tuple[int, int, int, int] = (0, 0, 0, 0)
+    opacity: int = 0
+
+    resourcekey = PsdResourceKey.FILTER_MASK
+
+    @classmethod
+    def fromfile(cls, fh: BinaryIO, psdformat: PsdFormat) -> PsdFilterMask:
+        """Return instance from open file."""
+        colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
+        fmt = '4h' if colorspace == PsdColorSpaceType.Lab else '4H'
+        components = psdformat.read(fh, fmt)
+        opacity = psdformat.read(fh, 'H')
+        return cls(
+            colorspace=colorspace,
+            components=components,
+            opacity=opacity,
+        )
+
+    @classmethod
+    def frombytes(cls, data: bytes, psdformat: PsdFormat) -> PsdFilterMask:
+        """Return instance from bytes."""
+        with io.BytesIO(data) as fh:
+            self = cls.fromfile(fh, psdformat)
+        return self
+
+    def tobytes(self, psdformat: PsdFormat) -> bytes:
+        """Return filter mask record."""
+        data = psdformat.pack('h', self.colorspace.value)
+        fmt = '4h' if self.colorspace == PsdColorSpaceType.Lab else '4H'
+        data += psdformat.pack(fmt, *self.components)
+        data += psdformat.pack('H', self.opacity)
+        return data
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat) -> int:
+        """Write user mask record to open file."""
+        return fh.write(self.tobytes(psdformat))
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, self.__class__)
+            and self.colorspace == other.colorspace
+            and self.components == other.components
+            and self.opacity == other.opacity
+        )
+
+    def __repr__(self) -> str:
+        return f'<{self.__class__.__name__} {self.colorspace.name!r}>'
+
+    def __str__(self) -> str:
+        return indent(
+            repr(self),
+            f'components: {self.components}',
+            f'opacity: {self.opacity}',
         )
 
 
@@ -1354,7 +1558,7 @@ class PsdUserMask:
 class TiffImageResources:
     """TIFF ImageResources tag #34377."""
 
-    psd: PsdFormat
+    psdformat: PsdFormat
     name: str | None = None
 
     @classmethod
@@ -1364,9 +1568,9 @@ class TiffImageResources:
         """Return instance from open file."""
         raise NotImplementedError
         # TODO
-        # psd = PsdFormat(fh.read(4))
+        # psdformat = PsdFormat(fh.read(4))
         # fh.seek(-4, 1)
-        # return cls(psd)
+        # return cls(psdformat)
 
     @classmethod
     def frombytes(
@@ -1379,36 +1583,37 @@ class TiffImageResources:
 
     @classmethod
     def fromtiff(
-        cls, filename: os.PathLike | str, page: int = 0
+        cls, filename: os.PathLike | str, /, pageindex: int = 0
     ) -> TiffImageResources:
         """Return instance from TIFF file."""
-        data = read_tifftag(filename, 34377, page=page)
+        data = read_tifftag(filename, 34377, pageindex=pageindex)
         return cls.frombytes(data, name=os.path.split(filename)[-1])
 
     def write(
         self,
         fh: BinaryIO,
-        psd: PsdFormat | PsdFormatSignatures | bytes | None = None,
+        psdformat: PsdFormat | PsdFormatSignatures | bytes | None = None,
     ) -> int:
         """Write ImageResourceData tag to open file."""
-        return fh.write(self.tobytes(psd=psd))
+        return fh.write(self.tobytes(psdformat))
 
     def tobytes(
         self,
-        psd: PsdFormat | PsdFormatSignatures | bytes | None = None,
+        psdformat: PsdFormat | PsdFormatSignatures | bytes | None = None,
     ) -> bytes:
         """Return data of ImageResourceData tag as bytes."""
-        psd = self.psd if psd is None else PsdFormat(psd)
+        psdformat = (
+            self.psdformat if psdformat is None else PsdFormat(psdformat)
+        )
         return b''
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} {self.name!r}>'
 
     def __str__(self) -> str:
-        if not self.psd:
+        if not self.psdformat:
             return repr(self)
-        info = [repr(self), repr(self.psd)]
-        return indent(*info)
+        return indent(repr(self), repr(self.psdformat))
 
 
 def log_warning(msg, *args, **kwargs):
@@ -1419,13 +1624,13 @@ def log_warning(msg, *args, **kwargs):
 
 
 def read_tifftag(
-    filename: os.PathLike | str, tag: int | str, page: int = 0
+    filename: os.PathLike | str, tag: int | str, /, pageindex: int = 0
 ) -> bytes:
     """Return tag value from TIFF file."""
     from tifffile import TiffFile  # type: ignore
 
     with TiffFile(filename) as tif:
-        data = tif.pages[page].tags.valueof(tag)
+        data = tif.pages[pageindex].tags.valueof(tag)
         if data is None:
             raise ValueError('TIFF file contains no tag {tag!r}')
     return data
@@ -1450,6 +1655,16 @@ def indent(*args: Any) -> str:
 def test(verbose: bool = False) -> None:
     """Test TiffImageSourceData and TiffImageResources classes."""
     from glob import glob
+    import tifffile
+    import imagecodecs
+
+    print(f'Python {sys.version}')
+    print(
+        f'psdtags-{__version__},',
+        f'numpy-{numpy.__version__},',
+        f'tifffile-{tifffile.__version__},',
+        f'imagecodecs-{imagecodecs.__version__}',
+    )
 
     for filename in glob('tests/*.tif'):
         psd1 = TiffImageSourceData.fromtiff(filename)
@@ -1458,14 +1673,20 @@ def test(verbose: bool = False) -> None:
             print(psd1)
             print()
 
-        # test roundtrips
+        # test roundtrips of psdformat and compression
         for psdformat in PsdFormatSignatures:
-            buffer = psd1.tobytes(psdformat)
-            psd2 = TiffImageSourceData.frombytes(buffer)
-            assert str(psd2)
-            if psd2:
-                assert psd2.psd == psdformat
-            assert psd1 == psd2
+            for compression in PsdCompressionType:
+                if compression == PsdCompressionType.UNKNOWN:
+                    continue
+                print('.', end='', flush=True)
+                buffer = psd1.tobytes(
+                    psdformat=psdformat, compression=compression
+                )
+                psd2 = TiffImageSourceData.frombytes(buffer)
+                assert str(psd2)
+                if psd2:
+                    assert psd2.psdformat == psdformat
+                assert psd1 == psd2
 
         # test tifftag value
         tagid, dtype, size, tagvalue, writeonce = psd1.tifftag()
@@ -1474,7 +1695,9 @@ def test(verbose: bool = False) -> None:
         assert size == len(tagvalue)
         assert writeonce
         assert psd1 == TiffImageSourceData.frombytes(tagvalue)
+        print('.', end=' ', flush=True)
 
+    print()
     # TODO: test TiffImageResources
 
 
@@ -1504,10 +1727,11 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             m = None
         if os.path.exists('tests'):
-            print('running tests')
+            # print('running tests')
             test()
-        print('running doctests')
+        # print('running doctests')
         doctest.testmod(m)
+        print()
         return 0
 
     if len(argv) == 1:
