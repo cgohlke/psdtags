@@ -23,7 +23,9 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :License: BSD 3-Clause
 
-:Version: 2022.1.14
+:Version: 2022.1.18
+
+:Status: Alpha
 
 Requirements
 ------------
@@ -39,6 +41,12 @@ This release has been tested with the following requirements and dependencies
 
 Revisions
 ---------
+2022.1.18
+    Various API changes (breaking).
+    Various fixes for writing TiffImageSourceData.
+    Support filter masks.
+    Add option to change channel compression on write.
+    Warn when skipping ResourceKey sections.
 2022.1.14
     Initial release.
 
@@ -49,6 +57,8 @@ The API is not stable yet and might change between revisions.
 
 This module has been tested with a limited number of files only.
 
+Additional layer information is not yet supported.
+
 Consider `psd-tools <https://github.com/psd-tools/psd-tools>`_ and
 `pytoshop <https://github.com/mdboom/pytoshop>`_  for working with
 Adobe Photoshop PSD files.
@@ -58,11 +68,11 @@ Examples
 Read the ImageSourceData tag value from a layered TIFF file and iterate over
 all the channels:
 
->>> isd = TiffImageSourceData.fromtiff('LayeredTiff.tif')
->>> for layer in isd.layers:
+>>> psd = TiffImageSourceData.fromtiff('layered.tif')
+>>> for layer in psd.layers:
 ...     layer.name
 ...     for channel in layer.channels:
-...         ch = channel.data
+...         ch = channel.data  # a numpy array
 'Background'
 'Reflect1'
 'Reflect2'
@@ -73,7 +83,24 @@ all the channels:
 'IShadow'
 'O'
 
+Write the image and ImageSourceData to a new layered TIFF file:
+
+>>> from tifffile import imread, imwrite
+>>> image = imread('layered.tif')
+>>> imwrite(
+...     '_layered.tif',
+...     image,
+...     byteorder=psd.byteorder,  # must match ImageSourceData
+...     photometric='rgb',  # must match ImageSourceData
+...     metadata=None,  # do not write any tifffile specific metadata
+...     extratags=[psd.tifftag()],
+... )
+
+Verify that the new layered TIFF file contains readable ImageSourceData:
+
+>>> assert psd == TiffImageSourceData.fromtiff('_layered.tif')
+
 To view the layer and mask information in a layered TIFF file from a
 command line, run::
 
-    python -m psdtags LayeredTiff.tif
+    python -m psdtags layered.tif
