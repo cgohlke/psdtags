@@ -23,7 +23,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :License: BSD 3-Clause
 
-:Version: 2022.1.18
+:Version: 2022.2.2
 
 :Status: Alpha
 
@@ -41,6 +41,13 @@ This release has been tested with the following requirements and dependencies
 
 Revisions
 ---------
+2022.2.2
+    Various API changes (breaking).
+    Handle additional layer information.
+    Preserve structures of unknown format as opaque bytes.
+    Add options to skip tag structures of unknown format.
+    Add abstract base class for tag structures.
+    Add classes for many structures.
 2022.1.18
     Various API changes (breaking).
     Various fixes for writing TiffImageSourceData.
