@@ -53,7 +53,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :License: BSD 3-Clause
 
-:Version: 2022.2.2
+:Version: 2022.2.11
 
 :Status: Alpha
 
@@ -65,12 +65,14 @@ This release has been tested with the following requirements and dependencies
 * `CPython 3.8.10, 3.9.10, 3.10.2 64-bit <https://www.python.org>`_
 * `Numpy 1.21.5 <https://pypi.org/project/numpy/>`_
 * `Imagecodecs 2021.11.20 <https://pypi.org/project/imagecodecs/>`_  (optional)
-* `Tifffile 2021.11.2 <https://pypi.org/project/tifffile/>`_  (optional)
+* `Tifffile 2022.2.9 <https://pypi.org/project/tifffile/>`_  (optional)
 * `Matplotlib 3.4.3 <https://pypi.org/project/matplotlib/>`_  (optional)
-
 
 Revisions
 ---------
+2022.2.11
+    Fix struct padding.
+    Support TiffImageResources.
 2022.2.2
     Various API changes (breaking).
     Handle additional layer information.
@@ -105,8 +107,8 @@ Examples
 Read the ImageSourceData tag value from a layered TIFF file and iterate over
 all the channels:
 
->>> psd = TiffImageSourceData.fromtiff('layered.tif')
->>> for layer in psd.layers:
+>>> isd = TiffImageSourceData.fromtiff('layered.tif')
+>>> for layer in isd.layers:
 ...     layer.name
 ...     for channel in layer.channels:
 ...         ch = channel.data  # a numpy array
@@ -120,25 +122,35 @@ all the channels:
 'IShadow'
 'O'
 
-Write the image and ImageSourceData to a new layered TIFF file:
+Read the ImageResources tag value from the TIFF file, iterate over the blocks,
+and get the thumbnail image:
+
+>>> res = TiffImageResources.fromtiff('layered.tif')
+>>> for block in res.blocks:
+...     blockname = block.name
+>>> res.thumbnail().shape
+(90, 160, 3)
+
+Write the image, ImageSourceData and ImageResources to a new layered TIFF file:
 
 >>> from tifffile import imread, imwrite
 >>> image = imread('layered.tif')
 >>> imwrite(
 ...     '_layered.tif',
 ...     image,
-...     byteorder=psd.byteorder,  # must match ImageSourceData
+...     byteorder=isd.byteorder,  # must match ImageSourceData
 ...     photometric='rgb',  # must match ImageSourceData
 ...     metadata=None,  # do not write any tifffile specific metadata
-...     extratags=[psd.tifftag()],
+...     extratags=[isd.tifftag(), res.tifftag()],
 ... )
 
 Verify that the new layered TIFF file contains readable ImageSourceData:
 
->>> assert psd == TiffImageSourceData.fromtiff('_layered.tif')
+>>> assert isd == TiffImageSourceData.fromtiff('_layered.tif')
+>>> assert res == TiffImageResources.fromtiff('_layered.tif')
 
-To view the layer and mask information in a layered TIFF file from a
-command line, run::
+To view the layer and mask information as well as the image resource blocks in
+a layered TIFF file from a command line, run::
 
     python -m psdtags layered.tif
 
@@ -146,15 +158,16 @@ command line, run::
 
 from __future__ import annotations
 
-__version__ = '2022.2.2'
+__version__ = '2022.2.11'
 
 __all__ = [
-    'PsdKeyABC',
     'PsdBlendMode',
     'PsdBoolean',
+    'PsdBytesBlock',
     'PsdChannel',
     'PsdChannelId',
     'PsdClippingType',
+    'PsdColorBlock',
     'PsdColorSpaceType',
     'PsdColorType',
     'PsdCompressionType',
@@ -165,6 +178,7 @@ __all__ = [
     'PsdImageMode',
     'PsdInteger',
     'PsdKey',
+    'PsdKeyABC',
     'PsdLayer',
     'PsdLayerFlag',
     'PsdLayerMask',
@@ -173,27 +187,38 @@ __all__ = [
     'PsdLayers',
     'PsdMetadataSetting',
     'PsdPascalString',
+    'PsdPascalStringBlock',
+    'PsdPascalStringsBlock',
     'PsdPatterns',
     'PsdPoint',
     'PsdRectangle',
     'PsdReferencePoint',
+    'PsdResourceBlockABC',
     'PsdResourceId',
     'PsdSectionDividerSetting',
+    'PsdSectionDividerType',
     'PsdSheetColorSetting',
     'PsdString',
+    'PsdStringBlock',
+    'PsdStringsBlock',
     'PsdTextEngineData',
+    'PsdThumbnailBlock',
     'PsdUnicodeString',
     'PsdUnknown',
     'PsdUserMask',
+    'PsdVersionBlock',
     'PsdVirtualMemoryArray',
     'PsdVirtualMemoryArrayList',
     'PsdWord',
-    'SectionDividerType',
-    # 'TiffImageResources',
+    'TiffImageResources',
     'TiffImageSourceData',
     'read_tifftag',
+    'read_psdblocks',
+    'read_psdtags',
+    'write_psdblocks',
     'write_psdtags',
 ]
+
 
 import sys
 import os
@@ -206,7 +231,7 @@ import abc
 
 import numpy
 
-from typing import Any, BinaryIO, Literal, Iterable, NamedTuple
+from typing import cast, Any, BinaryIO, Iterable, Literal, NamedTuple, Type
 
 
 class BytesEnumMeta(enum.EnumMeta):
@@ -339,6 +364,7 @@ class PsdKey(BytesEnum):
 class PsdResourceId(enum.IntEnum):
     """Image resource IDs."""
 
+    UNKONWN = -1
     OBSOLETE_1 = 1000
     MAC_PRINT_MANAGER_INFO = 1001
     MAC_PAGE_FORMAT_INFO = 1002
@@ -419,12 +445,10 @@ class PsdResourceId(enum.IntEnum):
     AUTO_SAVE_FILE_PATH = 1086
     AUTO_SAVE_FORMAT = 1087
     PATH_SELECTION_STATE = 1088
-    PATH_INFO_0 = 2000
-    # 2001...2997
+    PATH_INFO = 2000  # ..2997
     CLIPPING_PATH_NAME = 2999
     ORIGIN_PATH_INFO = 3000
-    PLUGIN_RESOURCE_0 = 4000
-    # 4001...4999
+    PLUGIN_RESOURCE = 4000  # ..4999
     IMAGE_READY_VARIABLES = 7000
     IMAGE_READY_DATA_SETS = 7001
     IMAGE_READY_DEFAULT_SELECTED_STATE = 7002
@@ -435,13 +459,17 @@ class PsdResourceId(enum.IntEnum):
     LIGHTROOM_WORKFLOW = 8000
     PRINT_FLAGS_INFO = 10000
 
-    @staticmethod
-    def is_path_info(resourceid: int) -> bool:
-        return 2000 <= resourceid <= 2997
-
-    @staticmethod
-    def is_plugin_resource(resourceid: int) -> bool:
-        return 4000 <= resourceid <= 4999
+    @classmethod
+    def _missing_(cls, value: object) -> object:
+        assert isinstance(value, int)
+        if 2000 <= value <= 2997:
+            obj = cls(2000)  # PATH_INFO
+        elif 4000 <= value <= 4999:
+            obj = cls(4000)  # PATH_INFO
+        else:
+            obj = cls(-1)  # UNKONWN
+        obj._value_ = value
+        return obj
 
 
 class PsdBlendMode(BytesEnum):
@@ -504,7 +532,10 @@ class PsdColorSpaceType(enum.IntEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> object:
-        return -1
+        assert isinstance(value, int)
+        obj = cls(-1)
+        obj._value_ = value
+        return obj
 
 
 class PsdImageMode(enum.IntEnum):
@@ -522,7 +553,10 @@ class PsdImageMode(enum.IntEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> object:
-        return -1
+        assert isinstance(value, int)
+        obj = cls(-1)
+        obj._value_ = value
+        return obj
 
 
 class PsdChannelId(enum.IntEnum):
@@ -561,7 +595,10 @@ class PsdCompressionType(enum.IntEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> object:
-        return -1
+        assert isinstance(value, int)
+        obj = cls(-1)
+        obj._value_ = value
+        return obj
 
 
 class PsdLayerFlag(enum.IntFlag):
@@ -608,10 +645,13 @@ class PsdColorType(enum.IntFlag):
 
     @classmethod
     def _missing_(cls, value: object) -> object:
-        return -1
+        assert isinstance(value, int)
+        obj = cls(-1)
+        obj._value_ = value
+        return obj
 
 
-class SectionDividerType(enum.IntEnum):
+class PsdSectionDividerType(enum.IntEnum):
     """Section divider setting types."""
 
     OTHER = 0
@@ -621,7 +661,10 @@ class SectionDividerType(enum.IntEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> object:
-        return 0
+        assert isinstance(value, int)
+        obj = cls(0)
+        obj._value_ = value
+        return obj
 
 
 class PsdPoint(NamedTuple):
@@ -766,9 +809,8 @@ class PsdFormat(bytes, enum.Enum):
 
     def read(self, fh: BinaryIO, fmt: str) -> Any:
         """Return unpacked values."""
-        value = struct.unpack(
-            self.byteorder + fmt, fh.read(struct.calcsize(fmt))
-        )
+        fmt = self.byteorder + fmt
+        value = struct.unpack(fmt, fh.read(struct.calcsize(fmt)))
         return value[0] if len(value) == 1 else value
 
     def write(self, fh: BinaryIO, fmt: str, *values) -> int:
@@ -859,49 +901,6 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} {self.key.name}>'
-
-
-class PsdResourceABC(metaclass=abc.ABCMeta):
-    """Abstract base class for resources."""
-
-    resourceid: PsdResourceId
-
-    @classmethod
-    @abc.abstractmethod
-    def read(
-        cls,
-        fh: BinaryIO,
-        psdformat: PsdFormat,
-        resourceid: PsdResourceId,
-        /,
-        length: int,
-    ) -> PsdResourceABC:
-        """Return instance from open file."""
-        pass
-
-    @classmethod
-    def frombytes(
-        cls, data: bytes, psdformat: PsdFormat, resourceid: PsdResourceId, /
-    ) -> PsdResourceABC:
-        """Return instance from bytes."""
-        with io.BytesIO(data) as fh:
-            self = cls.read(fh, psdformat, resourceid, length=len(data))
-        return self
-
-    @abc.abstractmethod
-    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
-        """Write instance values to open file."""
-        pass
-
-    def tobytes(self, psdformat: PsdFormat, /):
-        """Return instance values as bytes."""
-        with io.BytesIO() as fh:
-            self.write(fh, psdformat)
-            data = fh.getvalue()
-        return data
-
-    def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.resourceid.name}>'
 
 
 @dataclasses.dataclass(repr=False)
@@ -2059,7 +2058,7 @@ class PsdVirtualMemoryArray:
 class PsdSectionDividerSetting(PsdKeyABC):
     """Section divider setting (Photoshop 6.0)."""
 
-    kind: SectionDividerType
+    kind: PsdSectionDividerType
     blendmode: PsdBlendMode | None = None
     subtype: int | None = None
 
@@ -2075,7 +2074,7 @@ class PsdSectionDividerSetting(PsdKeyABC):
         length: int,
     ) -> PsdSectionDividerSetting:
         """Return instance from open file."""
-        kind = SectionDividerType(psdformat.read(fh, 'I'))
+        kind = PsdSectionDividerType(psdformat.read(fh, 'I'))
         if length < 12:
             return cls(kind=kind)
         signature = fh.read(4)
@@ -2440,6 +2439,422 @@ class PsdEmpty(PsdKeyABC):
         return 0
 
 
+class PsdResourceBlockABC(metaclass=abc.ABCMeta):
+    """Abstract base class for image resource block data."""
+
+    resourceid: PsdResourceId
+    name: str
+
+    @classmethod
+    @abc.abstractmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdResourceBlockABC:
+        """Return instance from open file."""
+        pass
+
+    @classmethod
+    def frombytes(
+        cls,
+        data: bytes,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+    ) -> PsdResourceBlockABC:
+        """Return instance from bytes."""
+        with io.BytesIO(data) as fh:
+            self = cls.read(
+                fh, psdformat, resourceid, name=name, length=len(data)
+            )
+        return self
+
+    @abc.abstractmethod
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write instance values to open file."""
+        pass
+
+    def tobytes(self, psdformat: PsdFormat, /):
+        """Return instance values as bytes."""
+        with io.BytesIO() as fh:
+            self.write(fh, psdformat)
+            data = fh.getvalue()
+        return data
+
+    def __repr__(self) -> str:
+        return (
+            f'<{self.__class__.__name__} {self.resourceid.name} '
+            f'{self.resourceid.value}>'
+        )
+
+
+@dataclasses.dataclass(repr=False)
+class PsdBytesBlock(PsdResourceBlockABC):
+    """Image resource blocks stored as opaque bytes."""
+
+    resourceid: PsdResourceId
+    name: str
+    value: bytes
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdBytesBlock:
+        """Return instance from open file."""
+        value = fh.read(length)
+        return cls(resourceid=resourceid, name=name, value=value)
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write instance values to open file."""
+        return fh.write(self.value)
+
+
+@dataclasses.dataclass(repr=False)
+class PsdVersionBlock(PsdResourceBlockABC):
+    """Image resource blocks stored as opaque bytes."""
+
+    resourceid: PsdResourceId
+    name: str
+    version: int
+    file_version: int
+    writer_name: str
+    reader_name: str
+    has_real_merged_data: bool
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdVersionBlock:
+        """Return instance from open file."""
+        version = psdformat.read(fh, 'I')
+        has_real_merged_data = bool(fh.read(1))
+        writer_name = str(PsdUnicodeString.read(fh, psdformat))
+        reader_name = str(PsdUnicodeString.read(fh, psdformat))
+        file_version = psdformat.read(fh, 'I')
+        return cls(
+            resourceid=resourceid,
+            name=name,
+            version=version,
+            file_version=file_version,
+            writer_name=writer_name,
+            reader_name=reader_name,
+            has_real_merged_data=has_real_merged_data,
+        )
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write instance values to open file."""
+        written = 0
+        written += psdformat.write(fh, 'I', self.version)
+        written += fh.write(b'\1' if self.has_real_merged_data else b'\0')
+        written += PsdUnicodeString(self.writer_name).write(fh, psdformat)
+        written += PsdUnicodeString(self.reader_name).write(fh, psdformat)
+        written += psdformat.write(fh, 'I', self.file_version)
+        return written
+
+    def __str__(self) -> str:
+        return indent(
+            repr(self),
+            f'version: {self.version}',
+            f'file_version: {self.file_version}',
+            f'writer_name: {self.writer_name}',
+            f'reader_name: {self.reader_name}',
+            f'has_real_merged_data: {self.has_real_merged_data}',
+        )
+
+
+@dataclasses.dataclass(repr=False)
+class PsdStringBlock(PsdResourceBlockABC):
+    """Unicode string."""
+
+    resourceid: PsdResourceId
+    name: str
+    value: str
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdStringBlock:
+        """Return instance from open file."""
+        value = str(PsdUnicodeString.read(fh, psdformat))
+        return cls(resourceid=resourceid, name=name, value=value)
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write Pascal string to open file."""
+        return PsdUnicodeString(self.value).write(fh, psdformat)
+
+    def __str__(self) -> str:
+        return indent(repr(self), self.value)
+
+
+@dataclasses.dataclass(repr=False)
+class PsdStringsBlock(PsdResourceBlockABC):
+    """Series of Unicode strings."""
+
+    resourceid: PsdResourceId
+    name: str
+    values: list[str]
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdStringsBlock:
+        """Return instance from open file."""
+        values = []
+        pos = fh.tell()
+        while fh.tell() - pos < length:
+            values.append(str(PsdUnicodeString.read(fh, psdformat)))
+        return cls(resourceid=resourceid, name=name, values=values)
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write sequence of Unicode strings to open file."""
+        written = 0
+        for value in self.values:
+            written += PsdUnicodeString(value).write(fh, psdformat)
+        return written
+
+    def __str__(self) -> str:
+        return indent(repr(self), *self.values)
+
+
+@dataclasses.dataclass(repr=False)
+class PsdPascalStringBlock(PsdResourceBlockABC):
+    """Pascal string."""
+
+    resourceid: PsdResourceId
+    name: str
+    value: str
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdPascalStringBlock:
+        """Return instance from open file."""
+        value = str(PsdPascalString.read(fh, pad=2))
+        return cls(resourceid=resourceid, name=name, value=value)
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write Pascal string to open file."""
+        return PsdPascalString(self.value).write(fh, pad=2)
+
+    def __str__(self) -> str:
+        return indent(repr(self), self.value)
+
+
+@dataclasses.dataclass(repr=False)
+class PsdPascalStringsBlock(PsdResourceBlockABC):
+    """Series of Pascal strings."""
+
+    resourceid: PsdResourceId
+    name: str
+    values: list[str]
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdPascalStringsBlock:
+        """Return instance from open file."""
+        values = []
+        pos = fh.tell()
+        while fh.tell() - pos < length:
+            values.append(str(PsdPascalString.read(fh, pad=1)))
+        return cls(resourceid=resourceid, name=name, values=values)
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write sequence of Pascal strings to open file."""
+        written = 0
+        for value in self.values:
+            written += PsdPascalString(value).write(fh, pad=1)
+        return written
+
+    def __str__(self) -> str:
+        return indent(repr(self), *self.values)
+
+
+@dataclasses.dataclass(repr=False)
+class PsdColorBlock(PsdResourceBlockABC):
+    """Color structure."""
+
+    resourceid: PsdResourceId
+    name: str
+    colorspace: PsdColorSpaceType
+    components: tuple[int, int, int, int] = (0, 0, 0, 0)
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdColorBlock:
+        """Return instance from open file."""
+        colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
+        fmt = '4h' if colorspace == PsdColorSpaceType.Lab else '4H'
+        components = psdformat.read(fh, fmt)
+        return cls(
+            resourceid=resourceid,
+            name=name,
+            colorspace=colorspace,
+            components=components,
+        )
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write instance values to open file."""
+        fmt = 'h4h' if self.colorspace == PsdColorSpaceType.Lab else 'h4H'
+        return psdformat.write(fh, fmt, self.colorspace, *self.components)
+
+    def __str__(self) -> str:
+        return indent(
+            repr(self),
+            f'colorspace: {self.colorspace.name}',
+            f'components: {self.components}',
+        )
+
+
+@dataclasses.dataclass(repr=False)
+class PsdThumbnailBlock(PsdResourceBlockABC):
+    """Thumbnail resource format."""
+
+    resourceid: PsdResourceId
+    name: str
+    format: int
+    width: int
+    height: int
+    rawdata: bytes
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> PsdThumbnailBlock:
+        """Return instance from open file."""
+        (
+            fmt,
+            width,
+            height,
+            widthbytes,
+            size,
+            size_compressed,
+            bitsperpixel,
+            planes,
+        ) = psdformat.read(fh, 'IIIIIIHH')
+
+        assert bitsperpixel == 24
+        assert planes == 1
+        assert widthbytes == (width * bitsperpixel + 31) // 32 * 4
+        assert size == widthbytes * height * planes
+        assert size_compressed == length - 28
+
+        rawdata = fh.read(length - 28)
+        return cls(
+            resourceid=resourceid,
+            name=name,
+            format=fmt,
+            width=width,
+            height=height,
+            rawdata=rawdata,
+        )
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write Thumbnail resource format to open file."""
+        planes = 1
+        bitsperpixel = 24
+        widthbytes = (self.width * bitsperpixel + 31) // 32 * 4
+        size = widthbytes * self.height * planes
+        size_compressed = len(self.rawdata)
+        psdformat.write(
+            fh,
+            'IIIIIIHH',
+            self.format,
+            self.width,
+            self.height,
+            widthbytes,
+            size,
+            size_compressed,
+            bitsperpixel,
+            planes,
+        )
+        return 28 + fh.write(self.rawdata)
+
+    @property
+    def is_bgr(self) -> bool:
+        return self.resourceid.value == 1033
+
+    @property
+    def data(self) -> numpy.ndarray:
+        if self.format == 0:
+            # kRawRGB
+            data = numpy.frombuffer(self.rawdata, dtype=numpy.uint8)
+            data.shape = (self.height, (self.width * 24 + 31) // 32 * 4)
+            data = data[:, : self.width * 3]
+            data = data.reshape(self.height, self.width, 3)
+        elif self.format == 1:
+            # kJpegRGB
+            from imagecodecs import jpeg8_decode
+
+            data = jpeg8_decode(self.rawdata)
+            assert data.shape == (self.height, self.width, 3)
+        else:
+            raise ValueError(f'unknown PsdThumbnailBlock format {format!r}')
+        return data
+
+    def __str__(self) -> str:
+        return indent(
+            repr(self),
+            f'format: {self.format}',
+            f'shape: ({self.height}, {self.width}, 3)',
+        )
+
+
 @dataclasses.dataclass(repr=False)
 class TiffImageSourceData:
     """TIFF ImageSourceData tag #37724."""
@@ -2539,6 +2954,8 @@ class TiffImageSourceData:
     ) -> TiffImageSourceData:
         """Return instance from TIFF file."""
         data = read_tifftag(filename, 37724, pageindex=pageindex)
+        if data is None:
+            raise ValueError('TIFF file contains no ImageSourceData tag')
         return cls.frombytes(
             data, name=os.path.split(filename)[-1], unknown=unknown
         )
@@ -2638,80 +3055,97 @@ class TiffImageResources:
     """TIFF ImageResources tag #34377."""
 
     psdformat: PsdFormat
-    tags: list[PsdKeyABC]
+    blocks: list[PsdResourceBlockABC]
+    blocks_dict: dict[int, PsdResourceBlockABC]  # TODO: use a multidict
     name: str | None = None
 
     @classmethod
     def read(
-        cls, fh: BinaryIO, name: str | None = None, unknown: bool = True
+        cls, fh: BinaryIO, length: int, name: str | None = None
     ) -> TiffImageResources:
         """Return instance from open file."""
-        raise NotImplementedError  # TODO
+        fname = type(fh).__name__ if name is None else name
+        blocks = read_psdblocks(fh, length=length)
+        blocks_dict: dict[int, PsdResourceBlockABC] = {}
+        for block in blocks:
+            if block.resourceid.value not in blocks_dict:
+                blocks_dict[block.resourceid.value] = block
+        return cls(
+            psdformat=PsdFormat.BE32BIT,
+            name=fname,
+            blocks=blocks,
+            blocks_dict=blocks_dict,
+        )
 
     @classmethod
     def frombytes(
-        cls, data: bytes, name: str | None = None, unknown: bool = True
+        cls, data: bytes, name: str | None = None
     ) -> TiffImageResources:
         """Return instance from ImageResources tag value."""
         with io.BytesIO(data) as fh:
-            self = cls.read(fh, name=name, unknown=unknown)
+            self = cls.read(fh, length=len(data), name=name)
         return self
 
     @classmethod
     def fromtiff(
-        cls,
-        filename: os.PathLike | str,
-        /,
-        pageindex: int = 0,
-        unknown: bool = True,
+        cls, filename: os.PathLike | str, /, pageindex: int = 0
     ) -> TiffImageResources:
         """Return instance from ImageResources tag in TIFF file."""
         data = read_tifftag(filename, 34377, pageindex=pageindex)
-        return cls.frombytes(
-            data, unknown=unknown, name=os.path.split(filename)[-1]
-        )
+        if data is None:
+            raise ValueError('TIFF file contains no ImageResources tag')
+        return cls.frombytes(data, name=os.path.split(filename)[-1])
 
-    def write(
-        self,
-        fh: BinaryIO,
-        psdformat: PsdFormat | bytes | None = None,
-        unknown: bool = True,
-    ) -> int:
+    def write(self, fh: BinaryIO) -> int:
         """Write ImageResources tag value to open file."""
-        psdformat = (
-            self.psdformat if psdformat is None else PsdFormat(psdformat)
-        )
-        return write_psdtags(
-            fh,
-            psdformat,
-            None,
-            unknown,
-            4,
-            *self.tags,
-        )
+        return write_psdblocks(fh, *self.blocks)
 
-    def tobytes(
-        self,
-        psdformat: PsdFormat | bytes | None = None,
-        unknown: bool = True,
-    ) -> bytes:
+    def tobytes(self) -> bytes:
         """Return ImageResources tag value as bytes."""
         with io.BytesIO() as fh:
-            self.write(
-                fh,
-                psdformat,
-                unknown=unknown,
-            )
+            self.write(fh)
             value = fh.getvalue()
         return value
+
+    def tifftag(self) -> tuple[int, int, int, bytes, bool]:
+        """Return tifffile.TiffWriter.write extratags item."""
+        value = self.tobytes()
+        return 34377, 7, len(value), value, True
+
+    def thumbnail(self) -> numpy.ndarray | None:
+        """Return thumbnail image if any, else None."""
+        if 1036 in self.blocks_dict:
+            return cast(PsdThumbnailBlock, self.blocks_dict[1036]).data
+        if 1033 in self.blocks_dict:
+            return cast(PsdThumbnailBlock, self.blocks_dict[1033]).data
+        return None
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, self.__class__)
+            and self.tobytes() == other.tobytes()
+        )
+
+    def __contains__(self, key: int) -> bool:
+        return key in self.blocks_dict
+
+    def __bool__(self) -> bool:
+        return len(self.blocks) > 0
+
+    def __len__(self) -> int:
+        return len(self.blocks)
+
+    def __getitem__(self, key: int) -> PsdResourceBlockABC:
+        return self.blocks_dict[key]
+
+    def __iter__(self):
+        yield from self.blocks
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} {self.name!r}>'
 
     def __str__(self) -> str:
-        if not self.psdformat:
-            return repr(self)
-        return indent(repr(self), repr(self.psdformat))
+        return indent(repr(self), *self.blocks)
 
 
 PSD_KEY_64BIT = {
@@ -2732,9 +3166,7 @@ PSD_KEY_64BIT = {
     PsdKey.PIXEL_SOURCE_DATA_CC15,
 }
 
-PSD_KEY_TYPE: dict[PsdKey, Any] = {
-    # registry of keys and handlers
-    # PsdEmpty and PsdUnknown are automatically detected
+PSD_KEY_TYPE: dict[PsdKey, Type[PsdKeyABC]] = {
     PsdKey.BLEND_CLIPPING_ELEMENTS: PsdBoolean,
     PsdKey.BLEND_INTERIOR_ELEMENTS: PsdBoolean,
     PsdKey.KNOCKOUT_SETTING: PsdBoolean,
@@ -2823,17 +3255,61 @@ PSD_KEY_TYPE: dict[PsdKey, Any] = {
 }
 
 
-def _print_psdtypes():
-    """Print sorted PSD_KEY_TYPE."""
-    for key in PsdKey:
-        if key not in PSD_KEY_TYPE:
-            PSD_KEY_TYPE[key] = PsdUnknown
-    print('{')
-    for key, value in sorted(
-        PSD_KEY_TYPE.items(), key=lambda x: x[1].__name__
-    ):
-        print(f'    PsdKey.{key.name}: {value.__name__},')
-    print('}')
+PSD_RESOURCE_TYPE: dict[PsdResourceId, Type[PsdResourceBlockABC]] = {
+    PsdResourceId.ALPHA_NAMES_PASCAL: PsdPascalStringsBlock,
+    PsdResourceId.CAPTION_PASCAL: PsdPascalStringBlock,
+    PsdResourceId.ALPHA_NAMES_UNICODE: PsdStringsBlock,
+    PsdResourceId.WORKFLOW_URL: PsdStringBlock,
+    # PsdResourceId.AUTO_SAVE_FILE_PATH: PsdStringBlock,
+    # PsdResourceId.AUTO_SAVE_FORMAT: PsdStringBlock,
+    PsdResourceId.THUMBNAIL_RESOURCE_PS4: PsdThumbnailBlock,
+    PsdResourceId.THUMBNAIL_RESOURCE: PsdThumbnailBlock,
+    PsdResourceId.VERSION_INFO: PsdVersionBlock,
+    PsdResourceId.BACKGROUND_COLOR: PsdColorBlock,
+}
+
+
+def read_psdblocks(fh: BinaryIO, /, length: int) -> list[PsdResourceBlockABC]:
+    """Return list of image resource block values from open file."""
+    align = 2
+    psdformat = PsdFormat.BE32BIT
+    blocks: list[PsdResourceBlockABC] = []
+    end = fh.tell() + length
+    while fh.tell() < end and fh.read(4) == psdformat:
+        resourceid = PsdResourceId(psdformat.read(fh, 'H'))
+        name = str(PsdPascalString.read(fh, 2))
+        size = psdformat.read(fh, 'I')
+        pos = fh.tell()
+        resourcetype = PSD_RESOURCE_TYPE.get(resourceid, PsdBytesBlock)
+        blocks.append(
+            resourcetype.read(
+                fh, psdformat, resourceid, name=name, length=size
+            )
+        )
+        size += (align - size % align) % align
+        fh.seek(pos + size)
+    return blocks
+
+
+def write_psdblocks(fh: BinaryIO, /, *blocks: PsdResourceBlockABC) -> int:
+    """Write sequence of blocks to open file."""
+    align = 2
+    psdformat = PsdFormat.BE32BIT
+    start = fh.tell()
+    for block in blocks:
+        fh.write(psdformat.value)
+        psdformat.write(fh, 'H', block.resourceid.value)
+        PsdPascalString(block.name).write(fh, 2)
+        size_pos = fh.tell()
+        psdformat.write(fh, 'I', 0)  # update later
+        pos = fh.tell()
+        block.write(fh, psdformat)
+        size = fh.tell() - pos
+        fh.seek(size_pos)
+        psdformat.write(fh, 'I', size)
+        fh.seek(size, 1)
+        fh.write(b'\0' * ((align - size % align) % align))
+    return fh.tell() - start
 
 
 def read_psdtags(
@@ -2909,14 +3385,14 @@ def write_psdtags(
 
 def read_tifftag(
     filename: os.PathLike | str, tag: int | str, /, pageindex: int = 0
-) -> bytes:
+) -> bytes | None:
     """Return tag value from TIFF file."""
     from tifffile import TiffFile  # type: ignore
 
     with TiffFile(filename) as tif:
         data = tif.pages[pageindex].tags.valueof(tag)
-        if data is None:
-            raise ValueError(f'TIFF file contains no tag {tag!r}')
+        # if data is None:
+        #     raise ValueError(f'TIFF file contains no tag {tag!r}')
     return data
 
 
@@ -3036,53 +3512,63 @@ def test(verbose: bool = False) -> None:
     )
 
     for filename in glob('tests/*.tif'):
-        psd1 = TiffImageSourceData.fromtiff(filename)
-        assert str(psd1)
+
+        if read_tifftag(filename, 34377) is not None:
+            res1 = TiffImageResources.fromtiff(filename)
+            assert str(res1)
+            if verbose:
+                print(res1)
+                print()
+            res2 = TiffImageResources.frombytes(res1.tobytes())
+            assert res1 == res2
+
+        isd1 = TiffImageSourceData.fromtiff(filename)
+        assert str(isd1)
         if verbose:
-            print(psd1)
+            print(isd1)
             print()
 
         has_unknown = any(
-            isinstance(tag, PsdUnknown) for tag in psd1.info
+            isinstance(tag, PsdUnknown) for tag in isd1.info
         ) or any(
             isinstance(tag, PsdUnknown)
-            for layer in psd1.layers
+            for layer in isd1.layers
             for tag in layer.info
         )
 
         # test roundtrips of psdformat and compression
         for psdformat in PsdFormat:
-            unknown = has_unknown and psdformat == psd1.psdformat
+            unknown = has_unknown and psdformat == isd1.psdformat
             if not unknown:
-                psd1 = TiffImageSourceData.fromtiff(filename, unknown=False)
+                isd1 = TiffImageSourceData.fromtiff(filename, unknown=False)
             for compression in PsdCompressionType:
                 if compression == PsdCompressionType.UNKNOWN:
                     continue
                 print('.', end='', flush=True)
-                buffer = psd1.tobytes(
+                buffer = isd1.tobytes(
                     psdformat=psdformat,
                     compression=compression,
                     unknown=unknown,
                 )
-                psd2 = TiffImageSourceData.frombytes(buffer)
-                str(psd2)
-                if psd2:
-                    assert psd2.psdformat == psdformat
-                assert psd1 == psd2
+                isd2 = TiffImageSourceData.frombytes(buffer)
+                str(isd2)
+                if isd2:
+                    assert isd2.psdformat == psdformat
+                assert isd1 == isd2
                 # test not equal after changing data
-                if psd2.layers:
-                    ch0 = psd2.layers[0].channels[0].data
+                if isd2.layers:
+                    ch0 = isd2.layers[0].channels[0].data
                     if ch0 is not None and ch0.size > 0:
                         ch0[..., 0] = 123
-                        assert psd1 != psd2
+                        assert isd1 != isd2
 
         # test tifftag value
-        tagid, dtype, size, tagvalue, writeonce = psd1.tifftag()
+        tagid, dtype, size, tagvalue, writeonce = isd1.tifftag()
         assert tagid == 37724
         assert dtype == 7
         assert size == len(tagvalue)
         assert writeonce
-        assert psd1 == TiffImageSourceData.frombytes(tagvalue)
+        assert isd1 == TiffImageSourceData.frombytes(tagvalue)
         print('.', end=' ', flush=True)
 
     print()
@@ -3098,6 +3584,8 @@ def main(argv: list[str] | None = None) -> int:
 
     """
     from glob import glob
+    from matplotlib import pyplot
+    from tifffile import TiffFile, imshow
 
     if argv is None:
         argv = sys.argv
@@ -3114,11 +3602,11 @@ def main(argv: list[str] | None = None) -> int:
             m = psdtags.psdtags
         except ImportError:
             m = None
+        doctest.testmod(m)
+        print()
         if os.path.exists('tests'):
             # print('running tests')
             test()
-        # print('running doctests')
-        doctest.testmod(m)
         print()
         return 0
 
@@ -3131,20 +3619,46 @@ def main(argv: list[str] | None = None) -> int:
     else:
         files = argv[1:]
 
+    doplot = False
     for fname in files:
+        name = os.path.split(fname)[-1]
         try:
-            psd = TiffImageSourceData.fromtiff(fname)
-            print(psd)
-            print()
-            if psd.layers and len(files) == 1:
-                from matplotlib import pyplot
-                from tifffile import imshow
+            with TiffFile(fname) as tif:
+                imagesourcedata = tif.pages[0].tags.valueof(37724)
+                imageresources = tif.pages[0].tags.valueof(34377)
 
-                for layer in psd.layers:
-                    image = layer.asarray()
-                    if image.size > 0:
-                        imshow(image, title=repr(layer))
+            if imagesourcedata is not None:
+                isd = TiffImageSourceData.frombytes(imagesourcedata, name=name)
+                print(isd)
+                print()
+                if isd.layers and len(files) == 1:
+
+                    for layer in isd.layers:
+                        image = layer.asarray()
+                        if image.size > 0:
+                            imshow(image, title=repr(layer))
+                            doplot = True
+
+            if imageresources is not None:
+                irs = TiffImageResources.frombytes(imageresources, name=name)
+                print(irs)
+                print()
+
+                if 1036 in irs:
+                    thumbnailblock = cast(PsdThumbnailBlock, irs[1036])
+                elif 1033 in irs:
+                    thumbnailblock = cast(PsdThumbnailBlock, irs[1033])
+                else:
+                    thumbnailblock = None
+                if thumbnailblock is not None:
+                    thumbnail = thumbnailblock.data
+                    if thumbnail.size > 0:
+                        imshow(thumbnail, title=repr(thumbnailblock))
+                        doplot = True
+
+            if doplot:
                 pyplot.show()
+
         except ValueError as exc:
             # raise  # enable for debugging
             print(fname, exc)
