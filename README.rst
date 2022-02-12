@@ -23,7 +23,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :License: BSD 3-Clause
 
-:Version: 2022.2.2
+:Version: 2022.2.11
 
 :Status: Alpha
 
@@ -35,12 +35,14 @@ This release has been tested with the following requirements and dependencies
 * `CPython 3.8.10, 3.9.10, 3.10.2 64-bit <https://www.python.org>`_
 * `Numpy 1.21.5 <https://pypi.org/project/numpy/>`_
 * `Imagecodecs 2021.11.20 <https://pypi.org/project/imagecodecs/>`_  (optional)
-* `Tifffile 2021.11.2 <https://pypi.org/project/tifffile/>`_  (optional)
+* `Tifffile 2022.2.9 <https://pypi.org/project/tifffile/>`_  (optional)
 * `Matplotlib 3.4.3 <https://pypi.org/project/matplotlib/>`_  (optional)
-
 
 Revisions
 ---------
+2022.2.11
+    Fix struct padding.
+    Support TiffImageResources.
 2022.2.2
     Various API changes (breaking).
     Handle additional layer information.
@@ -75,8 +77,8 @@ Examples
 Read the ImageSourceData tag value from a layered TIFF file and iterate over
 all the channels:
 
->>> psd = TiffImageSourceData.fromtiff('layered.tif')
->>> for layer in psd.layers:
+>>> isd = TiffImageSourceData.fromtiff('layered.tif')
+>>> for layer in isd.layers:
 ...     layer.name
 ...     for channel in layer.channels:
 ...         ch = channel.data  # a numpy array
@@ -90,24 +92,34 @@ all the channels:
 'IShadow'
 'O'
 
-Write the image and ImageSourceData to a new layered TIFF file:
+Read the ImageResources tag value from the TIFF file, iterate over the blocks,
+and get the thumbnail image:
+
+>>> res = TiffImageResources.fromtiff('layered.tif')
+>>> for block in res.blocks:
+...     blockname = block.name
+>>> res.thumbnail().shape
+(90, 160, 3)
+
+Write the image, ImageSourceData and ImageResources to a new layered TIFF file:
 
 >>> from tifffile import imread, imwrite
 >>> image = imread('layered.tif')
 >>> imwrite(
 ...     '_layered.tif',
 ...     image,
-...     byteorder=psd.byteorder,  # must match ImageSourceData
+...     byteorder=isd.byteorder,  # must match ImageSourceData
 ...     photometric='rgb',  # must match ImageSourceData
 ...     metadata=None,  # do not write any tifffile specific metadata
-...     extratags=[psd.tifftag()],
+...     extratags=[isd.tifftag(), res.tifftag()],
 ... )
 
 Verify that the new layered TIFF file contains readable ImageSourceData:
 
->>> assert psd == TiffImageSourceData.fromtiff('_layered.tif')
+>>> assert isd == TiffImageSourceData.fromtiff('_layered.tif')
+>>> assert res == TiffImageResources.fromtiff('_layered.tif')
 
-To view the layer and mask information in a layered TIFF file from a
-command line, run::
+To view the layer and mask information as well as the image resource blocks in
+a layered TIFF file from a command line, run::
 
     python -m psdtags layered.tif
