@@ -45,49 +45,54 @@ and
 
 Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
-:Author:
-  `Christoph Gohlke <https://www.lfd.uci.edu/~gohlke/>`_
-
-:Organization:
-  Laboratory for Fluorescence Dynamics, University of California, Irvine
-
+:Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-
-:Version: 2022.2.11
-
-:Status: Alpha
+:Version: 2022.8.25
 
 Requirements
 ------------
+
 This release has been tested with the following requirements and dependencies
 (other versions may work):
 
-* `CPython 3.8.10, 3.9.10, 3.10.2 64-bit <https://www.python.org>`_
-* `Numpy 1.21.5 <https://pypi.org/project/numpy/>`_
-* `Imagecodecs 2021.11.20 <https://pypi.org/project/imagecodecs/>`_  (optional)
-* `Tifffile 2022.2.9 <https://pypi.org/project/tifffile/>`_  (optional)
-* `Matplotlib 3.4.3 <https://pypi.org/project/matplotlib/>`_  (optional)
+- `CPython 3.8.10, 3.9.13, 3.10.6, 3.11.0rc1 <https://www.python.org>`_
+- `NumPy 1.22.4 <https://pypi.org/project/numpy/>`_
+- `Imagecodecs 2022.8.8  <https://pypi.org/project/imagecodecs/>`_  (optional)
+- `Tifffile 2022.8.12 <https://pypi.org/project/tifffile/>`_  (optional)
+- `Matplotlib 3.5.3 <https://pypi.org/project/matplotlib/>`_  (optional)
 
 Revisions
 ---------
+
+2022.8.25
+
+- Update metadata.
+
 2022.2.11
-    Fix struct padding.
-    Support TiffImageResources.
+
+- Fix struct padding.
+- Support TiffImageResources.
+
 2022.2.2
-    Various API changes (breaking).
-    Handle additional layer information.
-    Preserve structures of unknown format as opaque bytes.
-    Add options to skip tag structures of unknown format.
-    Add abstract base class for tag structures.
-    Add classes for many structures.
+
+- Various API changes (breaking).
+- Handle additional layer information.
+- Preserve structures of unknown format as opaque bytes.
+- Add options to skip tag structures of unknown format.
+- Add abstract base class for tag structures.
+- Add classes for many structures.
+
 2022.1.18
-    Various API changes (breaking).
-    Various fixes for writing TiffImageSourceData.
-    Support filter masks.
-    Add option to change channel compression on write.
-    Warn when skipping ResourceKey sections.
+
+- Various API changes (breaking).
+- Various fixes for writing TiffImageSourceData.
+- Support filter masks.
+- Add option to change channel compression on write.
+- Warn when skipping ResourceKey sections.
+
 2022.1.14
-    Initial release.
+
+- Initial release.
 
 Notes
 -----
@@ -104,6 +109,7 @@ Adobe Photoshop PSD files.
 
 Examples
 --------
+
 Read the ImageSourceData tag value from a layered TIFF file and iterate over
 all the channels:
 
@@ -149,8 +155,8 @@ Verify that the new layered TIFF file contains readable ImageSourceData:
 >>> assert isd == TiffImageSourceData.fromtiff('_layered.tif')
 >>> assert res == TiffImageResources.fromtiff('_layered.tif')
 
-To view the layer and mask information as well as the image resource blocks in
-a layered TIFF file from a command line, run::
+View the layer and mask information as well as the image resource blocks in
+a layered TIFF file from a command line::
 
     python -m psdtags layered.tif
 
@@ -158,7 +164,7 @@ a layered TIFF file from a command line, run::
 
 from __future__ import annotations
 
-__version__ = '2022.2.11'
+__version__ = '2022.8.25'
 
 __all__ = [
     'PsdBlendMode',
