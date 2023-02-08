@@ -17,22 +17,44 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2022.8.25
+:Version: 2023.2.8
+
+Quickstart
+----------
+
+Install the psdtags package and all dependencies from the
+`Python Package Index <https://pypi.org/project/psdtags/>`_::
+
+    python -m pip install -U psdtags[all]
+
+View the layer image and metadata stored in a layered TIFF file::
+
+    python -m psdtags file.tif
+
+See `Examples`_ for using the programming interface.
+
+Source code, examples, and support are available on
+`GitHub <https://github.com/cgohlke/psdtags>`_.
 
 Requirements
 ------------
 
-This release has been tested with the following requirements and dependencies
+This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython 3.8.10, 3.9.13, 3.10.6, 3.11.0rc1 <https://www.python.org>`_
-- `NumPy 1.22.4 <https://pypi.org/project/numpy/>`_
-- `Imagecodecs 2022.8.8  <https://pypi.org/project/imagecodecs/>`_  (optional)
-- `Tifffile 2022.8.12 <https://pypi.org/project/tifffile/>`_  (optional)
-- `Matplotlib 3.5.3 <https://pypi.org/project/matplotlib/>`_  (optional)
+- `CPython 3.8.10, 3.9.13, 3.10.10, 3.11.2 <https://www.python.org>`_
+- `NumPy 1.23.5 <https://pypi.org/project/numpy/>`_
+- `Imagecodecs 2023.1.23 <https://pypi.org/project/imagecodecs/>`_ (optional)
+- `Tifffile 2023.2.3 <https://pypi.org/project/tifffile/>`_  (optional)
+- `Matplotlib 3.6.3 <https://pypi.org/project/matplotlib/>`_  (optional)
 
 Revisions
 ---------
+
+2023.2.8
+
+- Change PsdPoint and PsdReferencePoint signatures (breaking).
+- Add helper function to create composite from layers.
 
 2022.8.25
 
