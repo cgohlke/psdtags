@@ -1,6 +1,6 @@
 # psdtags/psdtags.py
 
-# Copyright (c) 2022, Christoph Gohlke
+# Copyright (c) 2022-2023, Christoph Gohlke
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -47,22 +47,44 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2022.8.25
+:Version: 2023.2.8
+
+Quickstart
+----------
+
+Install the psdtags package and all dependencies from the
+`Python Package Index <https://pypi.org/project/psdtags/>`_::
+
+    python -m pip install -U psdtags[all]
+
+View the layer image and metadata stored in a layered TIFF file::
+
+    python -m psdtags file.tif
+
+See `Examples`_ for using the programming interface.
+
+Source code, examples, and support are available on
+`GitHub <https://github.com/cgohlke/psdtags>`_.
 
 Requirements
 ------------
 
-This release has been tested with the following requirements and dependencies
+This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython 3.8.10, 3.9.13, 3.10.6, 3.11.0rc1 <https://www.python.org>`_
-- `NumPy 1.22.4 <https://pypi.org/project/numpy/>`_
-- `Imagecodecs 2022.8.8  <https://pypi.org/project/imagecodecs/>`_  (optional)
-- `Tifffile 2022.8.12 <https://pypi.org/project/tifffile/>`_  (optional)
-- `Matplotlib 3.5.3 <https://pypi.org/project/matplotlib/>`_  (optional)
+- `CPython 3.8.10, 3.9.13, 3.10.10, 3.11.2 <https://www.python.org>`_
+- `NumPy 1.23.5 <https://pypi.org/project/numpy/>`_
+- `Imagecodecs 2023.1.23 <https://pypi.org/project/imagecodecs/>`_ (optional)
+- `Tifffile 2023.2.3 <https://pypi.org/project/tifffile/>`_  (optional)
+- `Matplotlib 3.6.3 <https://pypi.org/project/matplotlib/>`_  (optional)
 
 Revisions
 ---------
+
+2023.2.8
+
+- Change PsdPoint and PsdReferencePoint signatures (breaking).
+- Add helper function to create composite from layers.
 
 2022.8.25
 
@@ -164,7 +186,7 @@ a layered TIFF file from a command line::
 
 from __future__ import annotations
 
-__version__ = '2022.8.25'
+__version__ = '2023.2.8'
 
 __all__ = [
     'PsdBlendMode',
@@ -223,6 +245,7 @@ __all__ = [
     'read_psdtags',
     'write_psdblocks',
     'write_psdtags',
+    'overlay',
 ]
 
 
@@ -237,7 +260,7 @@ import abc
 
 import numpy
 
-from typing import cast, Any, BinaryIO, Iterable, Literal, NamedTuple, Type
+from typing import cast, Any, BinaryIO, Iterable, Literal, NamedTuple
 
 
 class BytesEnumMeta(enum.EnumMeta):
@@ -370,7 +393,7 @@ class PsdKey(BytesEnum):
 class PsdResourceId(enum.IntEnum):
     """Image resource IDs."""
 
-    UNKONWN = -1
+    UNKNOWN = -1
     OBSOLETE_1 = 1000
     MAC_PRINT_MANAGER_INFO = 1001
     MAC_PAGE_FORMAT_INFO = 1002
@@ -473,7 +496,7 @@ class PsdResourceId(enum.IntEnum):
         elif 4000 <= value <= 4999:
             obj = cls(4000)  # PATH_INFO
         else:
-            obj = cls(-1)  # UNKONWN
+            obj = cls(-1)  # UNKNOWN
         obj._value_ = value
         return obj
 
@@ -676,8 +699,8 @@ class PsdSectionDividerType(enum.IntEnum):
 class PsdPoint(NamedTuple):
     """Point."""
 
-    vertical: int
-    horizontal: int
+    y: int
+    x: int
 
     def __str__(self) -> str:
         return str(tuple(self))
@@ -720,7 +743,7 @@ class PsdPascalString:
             raise ValueError(f'invalid length of pascal string, {size} > 255')
         data = fh.read(size)
         if len(data) != size:
-            raise IOError(f'could not read enough data, {len(data)} != {size}')
+            raise OSError(f'could not read enough data, {len(data)} != {size}')
         value = data.decode('macroman')
         fh.seek((pad - (size + 1) % pad) % pad, 1)
         return cls(value=value)
@@ -755,7 +778,7 @@ class PsdUnicodeString:
         assert size >= 0
         data = fh.read(size)
         if len(data) != size:
-            raise IOError(f'could not read enough data, {len(data)} != {size}')
+            raise OSError(f'could not read enough data, {len(data)} != {size}')
         value = data.decode(psdformat.utf16)
         if value and value[-1] == '\0':
             value = value[:-1]
@@ -1869,7 +1892,7 @@ class PsdVirtualMemoryArrayList:
         """Return instance from open file."""
         version = psdformat.read(fh, 'I')
         assert version == 3
-        length = psdformat.read(fh, 'I')
+        length = psdformat.read(fh, 'I')  # noqa
         rectangle = PsdRectangle(*psdformat.read(fh, '4I'))
         channelcount = psdformat.read(fh, 'I')
 
@@ -2140,7 +2163,8 @@ class PsdSheetColorSetting(PsdKeyABC):
 class PsdReferencePoint(PsdKeyABC):
     """Reference point."""
 
-    point: tuple[float, float]
+    y: float
+    x: float
     key = PsdKey.REFERENCE_POINT
 
     @classmethod
@@ -2153,14 +2177,14 @@ class PsdReferencePoint(PsdKeyABC):
         length: int,
     ) -> PsdReferencePoint:
         """Return instance from open file."""
-        return cls(point=psdformat.read(fh, 'dd'))
+        return cls(*psdformat.read(fh, 'dd'))
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write reference point to open file."""
-        return psdformat.write(fh, 'dd', *self.point)
+        return psdformat.write(fh, 'dd', self.y, self.x)
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.point!r}>'
+        return f'<{self.__class__.__name__} ({self.y}, {self.x})>'
 
 
 @dataclasses.dataclass(repr=False)
@@ -3172,7 +3196,7 @@ PSD_KEY_64BIT = {
     PsdKey.PIXEL_SOURCE_DATA_CC15,
 }
 
-PSD_KEY_TYPE: dict[PsdKey, Type[PsdKeyABC]] = {
+PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     PsdKey.BLEND_CLIPPING_ELEMENTS: PsdBoolean,
     PsdKey.BLEND_INTERIOR_ELEMENTS: PsdBoolean,
     PsdKey.KNOCKOUT_SETTING: PsdBoolean,
@@ -3261,7 +3285,7 @@ PSD_KEY_TYPE: dict[PsdKey, Type[PsdKeyABC]] = {
 }
 
 
-PSD_RESOURCE_TYPE: dict[PsdResourceId, Type[PsdResourceBlockABC]] = {
+PSD_RESOURCE_TYPE: dict[PsdResourceId, type[PsdResourceBlockABC]] = {
     PsdResourceId.ALPHA_NAMES_PASCAL: PsdPascalStringsBlock,
     PsdResourceId.CAPTION_PASCAL: PsdPascalStringBlock,
     PsdResourceId.ALPHA_NAMES_UNICODE: PsdStringsBlock,
@@ -3435,7 +3459,7 @@ def compress(
         fmt = f'{rlecountfmt[0]}{len(sizes)}{rlecountfmt[1]}'
         return struct.pack(fmt, *sizes) + b''.join(lines)
 
-    raise ValueError(f'unknown compression type')
+    raise ValueError(f'unknown compression type {compression!r}')
 
 
 def decompress(
@@ -3477,7 +3501,67 @@ def decompress(
         data = imagecodecs.packbits_decode(data[offset:])
         return numpy.frombuffer(data, dtype=dtype).reshape(shape).copy()
 
-    raise ValueError('unknown compression type')
+    raise ValueError(f'unknown compression type {compression!r}')
+
+
+def overlay(
+    *layers: tuple[numpy.ndarray, tuple[int, int] | None],
+    shape: tuple[int, ...] | None = None,
+    vmax: float | None = None,
+) -> numpy.ndarray:
+    """Return overlay of image layers with unassociated alpha channels.
+
+    Parameters:
+        layers:
+            RGBA image array and offset of layer in canvas.
+            Layers must not exceed the canvas boundaries and must all
+            have the same data types. Alpha channels are unassociated.
+        shape:
+            Canvas height and width.
+            By default, this is determined from the first layer.
+        vmax:
+            Value used to normalize layer values.
+            By default, this is determined from data type of the first layer.
+
+    Returns:
+        Overlay of image layers.
+
+    """
+    dtype = layers[0][0].dtype
+    if vmax is None:
+        if dtype.kind == 'f':
+            vmax = 1.0
+        else:
+            vmax = numpy.iinfo(dtype).max
+    if shape is None:
+        shape = layers[0][0].shape
+
+    def over(b, a, offset) -> None:
+        assert shape is not None
+        if offset is None:
+            offset = (0, 0)
+        if (
+            offset[0] < 0
+            or offset[1] < 0
+            or offset[0] + a.shape[0] > shape[0]
+            or offset[1] + a.shape[1] > shape[1]
+        ):
+            raise ValueError('layer is out of canvas bounds')
+        b = b[
+            slice(offset[0], offset[0] + a.shape[0]),
+            slice(offset[1], offset[1] + a.shape[1]),
+        ]
+        x = b[..., 3:] * (1.0 - a[..., 3:])
+        b *= x
+        b += a * a[..., 3:]
+        b[..., 3] = a[..., 3] + x[..., 0]
+        b[..., :3] /= b[..., 3:]
+
+    composite = numpy.zeros((*shape, 4))
+    for layer in layers:
+        over(composite, layer[0] / vmax, layer[1])
+    composite *= vmax
+    return composite.astype(dtype)
 
 
 def log_warning(msg, *args, **kwargs):
@@ -3518,7 +3602,6 @@ def test(verbose: bool = False) -> None:
     )
 
     for filename in glob('tests/*.tif'):
-
         if read_tifftag(filename, 34377) is not None:
             res1 = TiffImageResources.fromtiff(filename)
             assert str(res1)
@@ -3638,7 +3721,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(isd)
                 print()
                 if isd.layers and len(files) == 1:
-
                     for layer in isd.layers:
                         image = layer.asarray()
                         if image.size > 0:
