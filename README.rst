@@ -8,7 +8,7 @@ TIFF file created by Photoshop.
 
 The format is specified in the
 `Adobe Photoshop TIFF Technical Notes (March 22, 2002)
-<https://www.adobe.io/open/standards/TIFF.html>`_
+<https://www.awaresystems.be/imaging/tiff/specification/TIFFphotoshop.pdf>`_
 and
 `Adobe Photoshop File Formats Specification (November 2019)
 <https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/>`_.
@@ -17,7 +17,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.2.18
+:Version: 2023.2.18.1
 
 Quickstart
 ----------
