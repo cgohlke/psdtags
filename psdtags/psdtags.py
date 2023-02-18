@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.2.8
+:Version: 2023.2.18
 
 Quickstart
 ----------
@@ -80,6 +80,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2023.2.18
+
+- Allow unknown PsdKeys (#5).
 
 2023.2.8
 
@@ -186,7 +190,7 @@ a layered TIFF file from a command line::
 
 from __future__ import annotations
 
-__version__ = '2023.2.8'
+__version__ = '2023.2.18'
 
 __all__ = [
     'PsdBlendMode',
@@ -285,7 +289,15 @@ class BytesEnumMeta(enum.EnumMeta):
                     args = (args[0][::-1],) + args[1:]
                 c = enum.EnumMeta.__call__(cls, *args, **kwds)
             except Exception:
-                raise exc
+                if args and len(args[0]) == 4 and args[0].isalnum():
+                    log_warning(
+                        f'psdtags.{cls.__name__}({args[0]!r}) not defined'
+                    )
+                    newargs = (b'?unk',) + args[1:]
+                    c = enum.EnumMeta.__call__(cls, *newargs, **kwds)
+                    c._value_ = args[0]
+                else:
+                    raise exc
         return c
 
 
@@ -304,6 +316,7 @@ class BytesEnum(bytes, enum.Enum, metaclass=BytesEnumMeta):
 class PsdKey(BytesEnum):
     """Keys of tagged structures."""
 
+    UNKNOWN = b'?unk'
     ALPHA = b'Alph'
     ANIMATION_EFFECTS = b'anFX'
     ANNOTATIONS = b'Anno'
@@ -504,6 +517,7 @@ class PsdResourceId(enum.IntEnum):
 class PsdBlendMode(BytesEnum):
     """Blend modes."""
 
+    UNKNOWN = b'?unk'
     PASS_THROUGH = b'pass'
     NORMAL = b'norm'
     DISSOLVE = b'diss'
