@@ -17,7 +17,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.2.8
+:Version: 2023.2.18
 
 Quickstart
 ----------
@@ -50,6 +50,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2023.2.18
+
+- Allow unknown PsdKeys (#5).
 
 2023.2.8
 
