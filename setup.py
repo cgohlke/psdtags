@@ -65,14 +65,8 @@ setup(
     packages=['psdtags'],
     entry_points={'console_scripts': ['psdtags = psdtags.psdtags:main']},
     python_requires='>=3.8',
-    install_requires=['numpy>=1.19.2'],
-    extras_require={
-        'all': [
-            'matplotlib>=3.3',
-            'tifffile>=2021.11.2',
-            'imagecodecs>=2021.11.20',
-        ]
-    },
+    install_requires=['numpy'],
+    extras_require={'all': ['matplotlib', 'tifffile', 'imagecodecs']},
     platforms=['any'],
     classifiers=[
         'Development Status :: 3 - Alpha',
@@ -80,7 +74,6 @@ setup(
         'Intended Audience :: Developers',
         'Operating System :: OS Independent',
         'Programming Language :: Python :: 3 :: Only',
-        'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
