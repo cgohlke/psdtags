@@ -17,7 +17,8 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.2.18.1
+:Version: 2023.4.30
+:DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
 ----------
@@ -42,14 +43,23 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython 3.8.10, 3.9.13, 3.10.10, 3.11.2 <https://www.python.org>`_
-- `NumPy 1.23.5 <https://pypi.org/project/numpy/>`_
-- `Imagecodecs 2023.1.23 <https://pypi.org/project/imagecodecs/>`_ (optional)
-- `Tifffile 2023.2.3 <https://pypi.org/project/tifffile/>`_  (optional)
-- `Matplotlib 3.6.3 <https://pypi.org/project/matplotlib/>`_  (optional)
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.3
+- `NumPy <https://pypi.org/project/numpy/>`_ 1.23.5
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.3.16
+  (required for compressing/decompressing image data)
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.4.12
+  (required for reading/writing tags from/to TIFF files)
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.7.1
+  (required for plotting)
 
 Revisions
 ---------
+
+2023.4.30
+
+- Few API changes (breaking).
+- Improve object repr.
+- Drop support for Python 3.8 and numpy < 1.21 (NEP29).
 
 2023.2.18
 
@@ -95,7 +105,7 @@ Notes
 
 The API is not stable yet and might change between revisions.
 
-This module has been tested with a limited number of files only.
+This library has been tested with a limited number of files only.
 
 Additional layer information is not yet supported.
 
@@ -155,3 +165,6 @@ View the layer and mask information as well as the image resource blocks in
 a layered TIFF file from a command line::
 
     python -m psdtags layered.tif
+
+Refer to the `layered_tiff.py` example in the source distribution for
+creating a layered TIFF file from individual layer images.
