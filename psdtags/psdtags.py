@@ -47,7 +47,8 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.2.18.1
+:Version: 2023.4.30
+:DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
 ----------
@@ -72,14 +73,23 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython 3.8.10, 3.9.13, 3.10.10, 3.11.2 <https://www.python.org>`_
-- `NumPy 1.23.5 <https://pypi.org/project/numpy/>`_
-- `Imagecodecs 2023.1.23 <https://pypi.org/project/imagecodecs/>`_ (optional)
-- `Tifffile 2023.2.3 <https://pypi.org/project/tifffile/>`_  (optional)
-- `Matplotlib 3.6.3 <https://pypi.org/project/matplotlib/>`_  (optional)
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.3
+- `NumPy <https://pypi.org/project/numpy/>`_ 1.23.5
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.3.16
+  (required for compressing/decompressing image data)
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.4.12
+  (required for reading/writing tags from/to TIFF files)
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.7.1
+  (required for plotting)
 
 Revisions
 ---------
+
+2023.4.30
+
+- Few API changes (breaking).
+- Improve object repr.
+- Drop support for Python 3.8 and numpy < 1.21 (NEP29).
 
 2023.2.18
 
@@ -125,7 +135,7 @@ Notes
 
 The API is not stable yet and might change between revisions.
 
-This module has been tested with a limited number of files only.
+This library has been tested with a limited number of files only.
 
 Additional layer information is not yet supported.
 
@@ -186,11 +196,14 @@ a layered TIFF file from a command line::
 
     python -m psdtags layered.tif
 
+Refer to the `layered_tiff.py` example in the source distribution for
+creating a layered TIFF file from individual layer images.
+
 """
 
 from __future__ import annotations
 
-__version__ = '2023.2.18.1'
+__version__ = '2023.4.30'
 
 __all__ = [
     'PsdBlendMode',
@@ -218,6 +231,7 @@ __all__ = [
     'PsdLayerMaskParameterFlag',
     'PsdLayers',
     'PsdMetadataSetting',
+    'PsdMetadataSettings',
     'PsdPascalString',
     'PsdPascalStringBlock',
     'PsdPascalStringsBlock',
@@ -250,6 +264,9 @@ __all__ = [
     'write_psdblocks',
     'write_psdtags',
     'overlay',
+    'compress',
+    'decompress',
+    'REPR_MAXLEN',
 ]
 
 
@@ -261,10 +278,21 @@ import struct
 import zlib
 import dataclasses
 import abc
+from functools import cached_property
 
 import numpy
 
-from typing import cast, Any, BinaryIO, Iterable, Literal, NamedTuple
+from typing import TYPE_CHECKING, cast, NamedTuple
+
+if TYPE_CHECKING:
+    from typing import Any, BinaryIO, Literal
+    from collections.abc import Generator, Iterable
+
+    from numpy.typing import NDArray, DTypeLike
+
+
+REPR_MAXLEN = 24
+"""Maximum length of bytes to show in repr()."""
 
 
 class BytesEnumMeta(enum.EnumMeta):
@@ -278,7 +306,7 @@ class BytesEnumMeta(enum.EnumMeta):
         else:
             return True
 
-    def __call__(cls, *args, **kwds) -> Any:
+    def __call__(cls, *args, **kwds) -> Any:  # type: ignore
         try:
             # big endian
             c = enum.EnumMeta.__call__(cls, *args, **kwds)
@@ -303,6 +331,8 @@ class BytesEnumMeta(enum.EnumMeta):
 
 class BytesEnum(bytes, enum.Enum, metaclass=BytesEnumMeta):
     """Base class for bytes enums."""
+
+    value: bytes
 
     def tobytes(self, byteorder: str = '>') -> bytes:
         """Return enum value as bytes."""
@@ -336,10 +366,12 @@ class PsdKey(BytesEnum):
     CURVES = b'curv'
     EFFECTS_LAYER = b'lrFX'
     EXPOSURE = b'expA'
+    FILL_OPACITY = b'iOpa'
     FILTER_EFFECTS = b'FXid'
     FILTER_EFFECTS_2 = b'FEid'
     FILTER_MASK = b'FMsk'
     FOREIGN_EFFECT_ID = b'ffxi'
+    FRAMED_GROUP = b'frgb'
     GRADIENT_FILL_SETTING = b'GdFl'
     GRADIENT_MAP = b'grdm'
     HUE_SATURATION = b'hue2'
@@ -551,7 +583,7 @@ class PsdBlendMode(BytesEnum):
 class PsdColorSpaceType(enum.IntEnum):
     """Color space types."""
 
-    DUMMY = -1
+    UNKNOWN = -1
     RGB = 0
     HSB = 1
     CMYK = 2
@@ -584,7 +616,7 @@ class PsdColorSpaceType(enum.IntEnum):
 class PsdImageMode(enum.IntEnum):
     """Image modes."""
 
-    DUMMY = -1
+    UNKNOWN = -1
     Bitmap = 0
     Grayscale = 1
     Indexed = 2
@@ -652,6 +684,8 @@ class PsdLayerFlag(enum.IntFlag):
     OBSOLETE = 4
     PHOTOSHOP5 = 8  # 1 for Photoshop 5.0 and later, tells if bit 4 has info
     IRRELEVANT = 16  # pixel data irrelevant to appearance of document
+    _32 = 32
+    _64 = 64
 
 
 class PsdLayerMaskFlag(enum.IntFlag):
@@ -662,6 +696,8 @@ class PsdLayerMaskFlag(enum.IntFlag):
     INVERT = 4  # invert layer mask when blending (obsolete)
     RENDERED = 8  # user mask actually came from rendering other data
     APPLIED = 16  # user and/or vector masks have parameters applied to them
+    _32 = 32
+    _64 = 64
 
 
 class PsdLayerMaskParameterFlag(enum.IntFlag):
@@ -671,9 +707,12 @@ class PsdLayerMaskParameterFlag(enum.IntFlag):
     USER_FEATHER = 2  # user mask feather, 8 byte, double
     VECTOR_DENSITY = 4  # vector mask density, 1 byte
     VECTOR_FEATHER = 8  # vector mask feather, 8 bytes, double
+    _16 = 16
+    _32 = 32
+    _64 = 64
 
 
-class PsdColorType(enum.IntFlag):
+class PsdColorType(enum.IntEnum):
     """Color IDs used by sheet color setting structure."""
 
     UNKNOWN = -1
@@ -697,6 +736,7 @@ class PsdColorType(enum.IntFlag):
 class PsdSectionDividerType(enum.IntEnum):
     """Section divider setting types."""
 
+    UNKNOWN = -1
     OTHER = 0
     OPEN_FOLDER = 1
     CLOSED_FOLDER = 2
@@ -705,7 +745,7 @@ class PsdSectionDividerType(enum.IntEnum):
     @classmethod
     def _missing_(cls, value: object) -> object:
         assert isinstance(value, int)
-        obj = cls(0)
+        obj = cls(-1)
         obj._value_ = value
         return obj
 
@@ -716,7 +756,7 @@ class PsdPoint(NamedTuple):
     y: int
     x: int
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         return str(tuple(self))
 
 
@@ -739,8 +779,11 @@ class PsdRectangle(NamedTuple):
     def __bool__(self) -> bool:
         return self.bottom - self.top > 0 and self.right - self.left > 0
 
-    def __str__(self) -> str:
-        return str(tuple(self))
+    def __repr__(self) -> str:
+        return (
+            f'{self.__class__.__name__}('
+            f'{self.top}, {self.left}, {self.bottom}, {self.right})'
+        )
 
 
 @dataclasses.dataclass(repr=False)
@@ -772,11 +815,11 @@ class PsdPascalString:
         pad = fh.write(b'\0' * ((pad - (size + 1) % pad) % pad))
         return 1 + size + pad
 
+    def __str__(self) -> str:
+        return self.value
+
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self.value!r})'
-
-    def __str__(self):
-        return self.value
 
 
 @dataclasses.dataclass(repr=False)
@@ -799,7 +842,7 @@ class PsdUnicodeString:
         return cls(value=value)
 
     def write(
-        self, fh: BinaryIO, psdformat: PsdFormat, /, terminate=True
+        self, fh: BinaryIO, psdformat: PsdFormat, /, terminate: bool = True
     ) -> int:
         """Write unicode string to open file."""
         value = self.value + '\0' if terminate else self.value
@@ -807,11 +850,11 @@ class PsdUnicodeString:
         written += fh.write(value.encode(psdformat.utf16))
         return written
 
+    def __str__(self) -> str:
+        return self.value
+
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self.value!r})'
-
-    def __str__(self):
-        return self.value
 
 
 class PsdFormat(bytes, enum.Enum):
@@ -839,13 +882,13 @@ class PsdFormat(bytes, enum.Enum):
         return '<Q'
 
     @property
-    def utf16(self):
+    def utf16(self) -> str:
         if self.value == PsdFormat.BE32BIT or self.value == PsdFormat.BE64BIT:
             return 'UTF-16-BE'
         return 'UTF-16-LE'
 
     @property
-    def isb64(self):
+    def isb64(self) -> bool:
         return (
             self.value == PsdFormat.BE64BIT or self.value == PsdFormat.LE64BIT
         )
@@ -856,11 +899,11 @@ class PsdFormat(bytes, enum.Enum):
         value = struct.unpack(fmt, fh.read(struct.calcsize(fmt)))
         return value[0] if len(value) == 1 else value
 
-    def write(self, fh: BinaryIO, fmt: str, *values) -> int:
+    def write(self, fh: BinaryIO, fmt: str, *values: Any) -> int:
         """Write values to open file."""
         return fh.write(struct.pack(self.byteorder + fmt, *values))
 
-    def pack(self, fmt: str, *values) -> bytes:
+    def pack(self, fmt: str, *values: Any) -> bytes:
         """Return packed values."""
         return struct.pack(self.byteorder + fmt, *values)
 
@@ -872,7 +915,7 @@ class PsdFormat(bytes, enum.Enum):
             fmt = self.sizeformat  # TODO: test this
         else:
             fmt = self.byteorder + 'I'
-        return struct.unpack(fmt, fh.read(struct.calcsize(fmt)))[0]
+        return int(struct.unpack(fmt, fh.read(struct.calcsize(fmt)))[0])
 
     def write_size(
         self, fh: BinaryIO, value: int, key: PsdKey | None = None
@@ -935,7 +978,7 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
         """Write instance values to open file."""
         pass
 
-    def tobytes(self, psdformat: PsdFormat, /):
+    def tobytes(self, psdformat: PsdFormat, /) -> bytes:
         """Return instance values as bytes."""
         with io.BytesIO() as fh:
             self.write(fh, psdformat)
@@ -943,7 +986,7 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
         return data
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.key.name}>'
+        return f'{self.__class__.__name__}{enumstr(self.key)})>'
 
 
 @dataclasses.dataclass(repr=False)
@@ -976,7 +1019,7 @@ class PsdLayers(PsdKeyABC):
         count = abs(count)
 
         # layer records
-        layers = []
+        layers: list[PsdLayer] = []
         for _ in range(count):
             layers.append(PsdLayer.read(fh, psdformat, unknown=unknown))
 
@@ -1018,7 +1061,7 @@ class PsdLayers(PsdKeyABC):
         fh: BinaryIO,
         psdformat: PsdFormat,
         /,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
         unknown: bool = True,
     ) -> int:
         """Write layer records and channel info data to open file."""
@@ -1048,9 +1091,9 @@ class PsdLayers(PsdKeyABC):
         self,
         psdformat: PsdFormat,
         /,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
         unknown: bool = True,
-    ):
+    ) -> bytes:
         """Return layer records and channel info data as bytes."""
         with io.BytesIO() as fh:
             self.write(fh, psdformat, compression=compression, unknown=unknown)
@@ -1058,7 +1101,7 @@ class PsdLayers(PsdKeyABC):
         return data
 
     @property
-    def dtype(self) -> numpy.dtype:
+    def dtype(self) -> numpy.dtype[Any]:
         return numpy.dtype(PsdLayers.TYPES[self.key])
 
     @property
@@ -1085,20 +1128,21 @@ class PsdLayers(PsdKeyABC):
     def __getitem__(self, key: int) -> PsdLayer:
         return self.layers[key]
 
-    def __setitem__(self, key: int, value: PsdLayer):
+    def __setitem__(self, key: int, value: PsdLayer) -> None:
         self.layers[key] = value
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[PsdLayer, None, None]:
         yield from self.layers
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
+        sz = len(self.layers)
         return indent(
-            repr(self),
-            # f'length: {len(self)}',
-            f'shape: {self.shape!r}',
-            f'dtype: {numpy.dtype(self.dtype)}',
-            f'has_transparency: {self.has_transparency!r}',
-            *self.layers,
+            f'{self.__class__.__name__}(',
+            f'# {self.shape!r} {self.dtype}',
+            f'key={enumstr(self.key)},',
+            f'has_transparency={self.has_transparency},',
+            f'layers=[  # {sz}\n    {indent(*self.layers, sep=",")},\n],',
+            end='\n)',
         )
 
 
@@ -1185,7 +1229,7 @@ class PsdLayer:
         fh: BinaryIO,
         psdformat: PsdFormat,
         /,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
         unknown: bool = True,
     ) -> bytes:
         """Write layer record to open file and return channel data records."""
@@ -1240,7 +1284,7 @@ class PsdLayer:
         self,
         psdformat: PsdFormat,
         /,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
         unknown: bool = True,
     ) -> tuple[bytes, bytes]:
         """Return layer and channel data records."""
@@ -1252,9 +1296,9 @@ class PsdLayer:
         return layer_record, channel_image_data
 
     def asarray(
-        self, channelid: bytes | None = None, planar: bool = False
-    ) -> numpy.ndarray:
-        """Return channel image data as numpy array."""
+        self, channelid: PsdChannelId | None = None, planar: bool = False
+    ) -> NDArray[Any]:
+        """Return channel image data."""
         if channelid is not None:
             datalist = [
                 channel.data
@@ -1290,7 +1334,11 @@ class PsdLayer:
         return self.rectangle.offset
 
     @property
-    def has_unknowns(self):
+    def title(self) -> str:
+        return f'{self.__class__.__name__} {self.name!r}'
+
+    @property
+    def has_unknowns(self) -> bool:
         return any(isinstance(tag, PsdUnknown) for tag in self.info)
 
     def __eq__(self, other: object) -> bool:
@@ -1309,19 +1357,21 @@ class PsdLayer:
         )
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {str(self.name)!r}>'
-
-    def __str__(self) -> str:
+        szc = len(self.channels)
+        szi = len(self.info)
         return indent(
-            repr(self),
-            f'rectangle: {self.rectangle}',
-            f'opacity: {self.opacity}',
-            f'blendmode: {self.blendmode.name}',
-            f'clipping: {self.clipping.name}',
-            f'flags: {str(self.flags)}',
-            self.mask,
-            indent(f'channels[{len(self.channels)}]', *self.channels),
-            indent(f'info[{len(self.info)}]', *self.info),
+            f'{self.__class__.__name__}(',
+            f'name={self.name!r},',
+            f'channels=[  # {szc}\n    {indent(*self.channels, sep=",")},\n],',
+            f'rectangle={self.rectangle},',
+            f'mask={self.mask},',
+            f'opacity={self.opacity},',
+            f'blendmode={enumstr(self.blendmode)},',
+            f'blending_ranges={self.blending_ranges},',
+            f'clipping={enumstr(self.clipping)},',
+            f'flags={enumstr(self.flags)},',
+            f'info=[  # {szi}\n    {indent(*self.info, sep=",")},\n],',
+            end='\n)',
         )
 
 
@@ -1331,14 +1381,15 @@ class PsdChannel:
 
     channelid: PsdChannelId
     compression: PsdCompressionType = PsdCompressionType.RAW
-    data: numpy.ndarray | None = None
+    data: NDArray[Any] | None = None
     _data_length: int = 0
 
     @classmethod
     def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> PsdChannel:
         """Return instance from open file.
 
-        Channel image data must be read separately using read_image.
+        Channel image data must be read separately using
+        :py:meth:`PsdChannel.read_image`.
 
         """
         channelid = PsdChannelId(psdformat.read(fh, 'h'))
@@ -1358,7 +1409,7 @@ class PsdChannel:
         psdformat: PsdFormat,
         /,
         shape: tuple[int, ...],
-        dtype: numpy.dtype | str,
+        dtype: DTypeLike | str,
     ) -> None:
         """Read channel image data from open file."""
         if self.data is not None:
@@ -1378,7 +1429,7 @@ class PsdChannel:
         self,
         psdformat: PsdFormat,
         /,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
     ) -> tuple[bytes, bytes]:
         """Return channel info and image data records."""
         if self.data is None:
@@ -1407,7 +1458,7 @@ class PsdChannel:
         fh: BinaryIO,
         psdformat: PsdFormat,
         /,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
     ) -> bytes:
         """Write channel info record to file and return image data record."""
         channel_info, channel_image_data = self.tobytes(
@@ -1425,9 +1476,19 @@ class PsdChannel:
         )
 
     def __repr__(self) -> str:
-        return (
-            f'<{self.__class__.__name__}'
-            f' {self.channelid.name} {self.compression.name}>'
+        if self.data is None:
+            data = 'data=None,'
+        else:
+            data = (
+                'data=...,  # numpy.array('
+                f"{self.data.shape}, '{self.data.dtype}')"
+            )
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'channelid={enumstr(self.channelid)},',
+            f'compression={enumstr(self.compression)},',
+            data,
+            end='\n)',
         )
 
 
@@ -1569,33 +1630,31 @@ class PsdLayerMask:
         return self.rectangle is not None
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.rectangle}>'
-
-    def __str__(self) -> str:
         if self.rectangle is None:
-            return repr(self)
+            return f'{self.__class__.__name__}()'
         info = [
-            repr(self),
-            # f'rectangle: {self.rectangle}',
-            f'default_color: {self.default_color!r}',
+            f'{self.__class__.__name__}(',
+            f'flags={enumstr(self.flags)},',
+            f'rectangle={self.rectangle},',
         ]
-        if self.flags:
-            info += [f'flags: {str(self.flags)}']
+        if self.default_color:
+            info += [f'default_color={self.default_color},']
         if self.user_mask_density is not None:
-            info += [f'user_mask_density: {self.user_mask_density}']
+            info += [f'user_mask_density={self.user_mask_density},']
         if self.user_mask_feather is not None:
-            info += [f'user_mask_feather: {self.user_mask_feather}']
+            info += [f'user_mask_feather={self.user_mask_feather},']
         if self.vector_mask_density is not None:
-            info += [f'vector_mask_density: {self.vector_mask_density}']
+            info += [f'vector_mask_density={self.vector_mask_density},']
         if self.vector_mask_feather is not None:
-            info += [f'vector_mask_feather: {self.vector_mask_feather}']
+            info += [f'vector_mask_feather={self.vector_mask_feather},']
         if self.real_flags is not None and self.real_background is not None:
             info += [
-                f'real_background: {self.real_background!r}',
-                repr(self.real_rectangle),
+                f'real_flags={enumstr(self.real_flags)},',
+                f'real_background={self.real_background},',
+                f'real_rectangle={self.real_rectangle},',
                 repr(self.real_flags),
             ]
-        return indent(*info)
+        return indent(*info, end='\n)')
 
 
 @dataclasses.dataclass(repr=False)
@@ -1644,13 +1703,13 @@ class PsdUserMask(PsdKeyABC):
         """Write user mask record to open file."""
         return fh.write(self.tobytes(psdformat))
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         return indent(
-            repr(self),
-            f'colorspace: {self.colorspace.name}',
-            f'components: {self.components}',
-            f'opacity: {self.opacity}',
-            # f'flag: {self.flag}',  # always 128
+            f'{self.__class__.__name__}(',
+            f'colorspace={enumstr(self.colorspace)},',
+            f'components={self.components},',
+            f'opacity={self.opacity},',
+            end='\n)',
         )
 
 
@@ -1697,14 +1756,12 @@ class PsdFilterMask(PsdKeyABC):
         return fh.write(self.tobytes(psdformat))
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.colorspace.name}>'
-
-    def __str__(self) -> str:
         return indent(
-            repr(self),
-            f'components: {self.colorspace.name}',
-            f'components: {self.components}',
-            f'opacity: {self.opacity}',
+            f'{self.__class__.__name__}(',
+            f'colorspace={enumstr(self.colorspace)},',
+            f'components={self.components},',
+            f'opacity={self.opacity},',
+            end='\n)',
         )
 
 
@@ -1717,7 +1774,7 @@ class PsdPatterns(PsdKeyABC):
     name: str
     guid: str
     data: PsdVirtualMemoryArrayList
-    colortable: numpy.ndarray | None = None
+    colortable: NDArray[numpy.uint8] | None = None
     point: PsdPoint = PsdPoint(0, 0)
 
     @classmethod
@@ -1775,28 +1832,40 @@ class PsdPatterns(PsdKeyABC):
         fh.seek(length, 1)
         return length + 4
 
-    def asarray(self, planar: bool = False) -> numpy.ndarray:
-        """Return channel image data as numpy array."""
-        datalist = [channel.data for channel in self.data if channel]
+    def asarray(self, planar: bool = False) -> NDArray[Any]:
+        """Return channel image data."""
+        datalist: list[NDArray[Any]] = [
+            channel.data
+            for channel in self.data
+            if channel and channel.data is not None
+        ]
         if len(datalist) == 0:
             raise ValueError('no channel data found')
         if len(datalist) == 1:
             return datalist[0]
-        data = numpy.stack(datalist)
+        data: NDArray[Any] = numpy.stack(datalist)
         if not planar:
             data = numpy.moveaxis(data, 0, -1)
         return data
 
-    def __str__(self) -> str:
-        colortable = None if self.colortable is None else self.colortable.shape
+    def __repr__(self) -> str:
+        if self.colortable is None:
+            colortable = None
+        else:
+            colortable = (
+                '...,  # numpy.zeros('
+                f'{self.colortable.shape}, {self.colortable.dtype})'
+            )
         return indent(
-            repr(self),
-            f'imagemode: {self.imagemode.name}',
-            f'name: {str(self.name)!r}',
-            f'guid: {str(self.guid)!r}',
-            f'colortable: {colortable}',
-            f'point: {self.point}',
-            self.data,
+            f'{self.__class__.__name__}(',
+            f'key={enumstr(self.key)},',
+            f'imagemode={enumstr(self.imagemode)},',
+            f'name={self.name!r},',
+            f'guid={self.guid!r},',
+            f'colortable={colortable},',
+            f'point={self.point},',
+            f'data={self.data},',
+            end='\n)',
         )
 
 
@@ -1832,10 +1901,14 @@ class PsdMetadataSettings(PsdKeyABC):
         return written
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} [{len(self.items)}]>'
-
-    def __str__(self) -> str:
-        return indent(repr(self), *self.items)
+        sz = len(self.items)
+        if not self.items:
+            return f'{self.__class__.__name__}()'
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'items=[  # {sz}\n    {indent(*self.items, sep=",")},\n],',
+            end='\n)',
+        )
 
 
 @dataclasses.dataclass(repr=False)
@@ -1843,7 +1916,7 @@ class PsdMetadataSetting:
     """Metadata setting item."""
 
     signature: PsdFormat
-    key: bytes
+    key: bytes  # b'cust', b'cmls', b'extn', b'mlst', b'tmln', b'sgrp'
     data: bytes = b''
     copyonsheet: bool = False
 
@@ -1885,8 +1958,17 @@ class PsdMetadataSetting:
         )
 
     def __repr__(self) -> str:
-        return (
-            f'<{self.__class__.__name__} {self.key!r} {len(self.data)} bytes>'
+        if len(self.data) > REPR_MAXLEN:
+            data = f'data=...,  # bytes({len(self.data)})'
+        else:
+            data = f'data={self.data!r},'
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'signature={enumstr(self.signature)},',
+            f'key={self.key!r},',
+            f'copyonsheet={self.copyonsheet},',
+            data if self.data else '',
+            end='\n)',
         )
 
 
@@ -1938,23 +2020,19 @@ class PsdVirtualMemoryArrayList:
     def __getitem__(self, key: int) -> PsdVirtualMemoryArray:
         return self.channels[key]
 
-    def __setitem__(self, key: int, value: PsdVirtualMemoryArray):
+    def __setitem__(self, key: int, value: PsdVirtualMemoryArray) -> None:
         self.channels[key] = value
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[PsdVirtualMemoryArray, None, None]:
         yield from self.channels
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} [{len(self.channels)}]>'
-
-    def __str__(self) -> str:
-        channels = [
-            repr(channel) for channel in self.channels if channel.iswritten
-        ]
+        sz = len(self.channels)
         return indent(
-            repr(self),
-            f'rectangle: {str(self.rectangle)}',
-            *channels,
+            f'{self.__class__.__name__}(',
+            f'rectangle={self.rectangle},',
+            f'channels=[  # {sz}\n    {indent(*self.channels, sep=",")},\n],',
+            end='\n)',
         )
 
 
@@ -1967,7 +2045,7 @@ class PsdVirtualMemoryArray:
     rectangle: PsdRectangle | None = None
     pixeldepth: int | None = None
     compression: PsdCompressionType = PsdCompressionType.RAW
-    data: numpy.ndarray | None = None
+    data: NDArray[Any] | None = None
 
     @classmethod
     def read(
@@ -2048,7 +2126,7 @@ class PsdVirtualMemoryArray:
         return fh.tell() - start
 
     @property
-    def dtype(self) -> numpy.dtype:
+    def dtype(self) -> numpy.dtype[Any]:
         if self.pixeldepth is None:
             return numpy.dtype('B')
         return numpy.dtype({8: 'B', 16: 'H', 32: 'f'}[self.pixeldepth])
@@ -2076,24 +2154,17 @@ class PsdVirtualMemoryArray:
         )
 
     def __repr__(self) -> str:
-        if not self.iswritten:
-            return f'<{self.__class__.__name__} notwritten>'
-        if self.rectangle is None:
-            return f'<{self.__class__.__name__} empty>'
-        return (
-            f'<{self.__class__.__name__} {str(self.rectangle.shape)} '
-            f'{self.dtype} {self.compression.name}>'
-        )
-
-    def __str__(self) -> str:
         if not self.iswritten or self.rectangle is None:
-            return repr(self)
+            return f'{self.__class__.__name__}()'
         return indent(
-            repr(self),
-            f'rectangle: {str(self.rectangle)}',
-            f'depth: {self.depth}',
-            f'pixeldepth: {self.pixeldepth}',
-            f'compression: {self.compression.name}',
+            f'{self.__class__.__name__}(',
+            f'iswritten={self.iswritten},',
+            f'depth={self.depth},',
+            f'rectangle={self.rectangle},',
+            f'pixeldepth={self.pixeldepth},',
+            f'compression={enumstr(self.compression)},',
+            f'data=...,  # numpy.empty({self.shape}, {self.dtype})',
+            end='\n)',
         )
 
 
@@ -2141,7 +2212,13 @@ class PsdSectionDividerSetting(PsdKeyABC):
         return 16
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.kind.name}>'
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'kind={enumstr(self.kind)},',
+            f'blendmode={enumstr(self.blendmode)},',
+            f'subtype={self.subtype},',
+            end='\n)',
+        )
 
 
 @dataclasses.dataclass(repr=False)
@@ -2170,7 +2247,7 @@ class PsdSheetColorSetting(PsdKeyABC):
         return 8
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.color.name}>'
+        return f'{self.__class__.__name__}({enumstr(self.color)})'
 
 
 @dataclasses.dataclass(repr=False)
@@ -2198,7 +2275,7 @@ class PsdReferencePoint(PsdKeyABC):
         return psdformat.write(fh, 'dd', self.y, self.x)
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} ({self.y}, {self.x})>'
+        return f'{self.__class__.__name__}({self.y}, {self.x})'
 
 
 @dataclasses.dataclass(repr=False)
@@ -2232,9 +2309,12 @@ class PsdExposure(PsdKeyABC):
         )
 
     def __repr__(self) -> str:
-        return (
-            f'<{self.__class__.__name__} '
-            f'{self.exposure}, {self.offset}, {self.gamma}>'
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'exposure={self.exposure},',
+            f'offset={self.offset},',
+            f'gamma={self.gamma},',
+            end='\n)',
         )
 
 
@@ -2265,7 +2345,13 @@ class PsdTextEngineData(PsdKeyABC):
         return written
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {len(self.data)} bytes>'
+        if len(self.data) <= REPR_MAXLEN:
+            return f'{self.__class__.__name__}({self.data!r})'
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'...,  # bytes({len(self.data)})',
+            end='\n)',
+        )
 
 
 @dataclasses.dataclass(repr=False)
@@ -2294,9 +2380,12 @@ class PsdString(PsdKeyABC):
             fh, psdformat, terminate=False
         )
 
+    def __str__(self) -> str:
+        return self.value
+
     def __repr__(self) -> str:
         return (
-            f'<{self.__class__.__name__} {self.key.name} ' f'{self.value!r}>'
+            f'{self.__class__.__name__}({enumstr(self.key)}, {self.value!r})'
         )
 
 
@@ -2329,9 +2418,7 @@ class PsdBoolean(PsdKeyABC):
         return self.value
 
     def __repr__(self) -> str:
-        return (
-            f'<{self.__class__.__name__} {self.key.name} ' f'{self.value!r}>'
-        )
+        return f'{self.__class__.__name__}({enumstr(self.key)}, {self.value})'
 
 
 @dataclasses.dataclass(repr=False)
@@ -2359,9 +2446,7 @@ class PsdInteger(PsdKeyABC):
         return psdformat.write(fh, 'i', self.value)
 
     def __repr__(self) -> str:
-        return (
-            f'<{self.__class__.__name__} {self.key.name} ' f'{self.value!r}>'
-        )
+        return f'{self.__class__.__name__}({enumstr(self.key)}, {self.value})'
 
 
 @dataclasses.dataclass(repr=False)
@@ -2389,7 +2474,7 @@ class PsdWord(PsdKeyABC):
 
     def __repr__(self) -> str:
         return (
-            f'<{self.__class__.__name__} {self.key.name} ' f'{self.value!r}>'
+            f'{self.__class__.__name__}({enumstr(self.key)}, {self.value!r})'
         )
 
 
@@ -2441,9 +2526,16 @@ class PsdUnknown(PsdKeyABC):
         )
 
     def __repr__(self) -> str:
-        return (
-            f'<{self.__class__.__name__} {self.key.name} '
-            f'{len(self.value)!r} bytes>'
+        if len(self.value) > REPR_MAXLEN:
+            value = f'value=...,  # bytes({len(self.value)})'
+        else:
+            value = f'value={self.value!r},'
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'key={enumstr(self.key)},',
+            f'psdformat={enumstr(self.psdformat)},',
+            value,
+            end='\n)',
         )
 
 
@@ -2481,6 +2573,9 @@ class PsdEmpty(PsdKeyABC):
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write nothing to open file."""
         return 0
+
+    def __repr__(self) -> str:
+        return f'{self.__class__.__name__}({enumstr(self.key)})'
 
 
 class PsdResourceBlockABC(metaclass=abc.ABCMeta):
@@ -2524,7 +2619,7 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
         """Write instance values to open file."""
         pass
 
-    def tobytes(self, psdformat: PsdFormat, /):
+    def tobytes(self, psdformat: PsdFormat, /) -> bytes:
         """Return instance values as bytes."""
         with io.BytesIO() as fh:
             self.write(fh, psdformat)
@@ -2533,8 +2628,8 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
 
     def __repr__(self) -> str:
         return (
-            f'<{self.__class__.__name__} {self.resourceid.name} '
-            f'{self.resourceid.value}>'
+            f'{self.__class__.__name__}('
+            f'{enumstr(self.resourceid)}, {self.name!r})'
         )
 
 
@@ -2543,8 +2638,8 @@ class PsdBytesBlock(PsdResourceBlockABC):
     """Image resource blocks stored as opaque bytes."""
 
     resourceid: PsdResourceId
-    name: str
     value: bytes
+    name: str = ''
 
     @classmethod
     def read(
@@ -2564,18 +2659,31 @@ class PsdBytesBlock(PsdResourceBlockABC):
         """Write instance values to open file."""
         return fh.write(self.value)
 
+    def __repr__(self) -> str:
+        if len(self.value) > REPR_MAXLEN:
+            value = f'value=...,  # bytes({len(self.value)})'
+        else:
+            value = f'value={self.value!r},'
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'resourceid={enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            value,
+            end='\n)',
+        )
+
 
 @dataclasses.dataclass(repr=False)
 class PsdVersionBlock(PsdResourceBlockABC):
     """Image resource blocks stored as opaque bytes."""
 
     resourceid: PsdResourceId
-    name: str
     version: int
     file_version: int
     writer_name: str
     reader_name: str
     has_real_merged_data: bool
+    name: str = ''
 
     @classmethod
     def read(
@@ -2613,14 +2721,17 @@ class PsdVersionBlock(PsdResourceBlockABC):
         written += psdformat.write(fh, 'I', self.file_version)
         return written
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         return indent(
-            repr(self),
-            f'version: {self.version}',
-            f'file_version: {self.file_version}',
-            f'writer_name: {self.writer_name}',
-            f'reader_name: {self.reader_name}',
-            f'has_real_merged_data: {self.has_real_merged_data}',
+            f'{self.__class__.__name__}(',
+            f'resourceid={enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            f'version={self.version},',
+            f'file_version={self.file_version},',
+            f'writer_name={self.writer_name!r},',
+            f'reader_name={self.reader_name!r},',
+            f'has_real_merged_data={self.has_real_merged_data},',
+            end='\n)',
         )
 
 
@@ -2629,8 +2740,8 @@ class PsdStringBlock(PsdResourceBlockABC):
     """Unicode string."""
 
     resourceid: PsdResourceId
-    name: str
     value: str
+    name: str = ''
 
     @classmethod
     def read(
@@ -2650,8 +2761,14 @@ class PsdStringBlock(PsdResourceBlockABC):
         """Write Pascal string to open file."""
         return PsdUnicodeString(self.value).write(fh, psdformat)
 
-    def __str__(self) -> str:
-        return indent(repr(self), self.value)
+    def __repr__(self) -> str:
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'resourceid={enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            f'value={self.value!r},',
+            end='\n)',
+        )
 
 
 @dataclasses.dataclass(repr=False)
@@ -2659,8 +2776,8 @@ class PsdStringsBlock(PsdResourceBlockABC):
     """Series of Unicode strings."""
 
     resourceid: PsdResourceId
-    name: str
     values: list[str]
+    name: str = ''
 
     @classmethod
     def read(
@@ -2686,8 +2803,16 @@ class PsdStringsBlock(PsdResourceBlockABC):
             written += PsdUnicodeString(value).write(fh, psdformat)
         return written
 
-    def __str__(self) -> str:
-        return indent(repr(self), *self.values)
+    def __repr__(self) -> str:
+        values = tuple(f"'{v}'" for v in self.values)
+        sz = len(values)
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'resourceid={enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            f'values=[  # {sz}\n    {indent(*values, sep=",")},\n],',
+            end='\n)',
+        )
 
 
 @dataclasses.dataclass(repr=False)
@@ -2695,8 +2820,8 @@ class PsdPascalStringBlock(PsdResourceBlockABC):
     """Pascal string."""
 
     resourceid: PsdResourceId
-    name: str
     value: str
+    name: str = ''
 
     @classmethod
     def read(
@@ -2716,8 +2841,14 @@ class PsdPascalStringBlock(PsdResourceBlockABC):
         """Write Pascal string to open file."""
         return PsdPascalString(self.value).write(fh, pad=2)
 
-    def __str__(self) -> str:
-        return indent(repr(self), self.value)
+    def __repr__(self) -> str:
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'resourceid={enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            f'value={self.value!r},',
+            end='\n)',
+        )
 
 
 @dataclasses.dataclass(repr=False)
@@ -2725,8 +2856,8 @@ class PsdPascalStringsBlock(PsdResourceBlockABC):
     """Series of Pascal strings."""
 
     resourceid: PsdResourceId
-    name: str
     values: list[str]
+    name: str = ''
 
     @classmethod
     def read(
@@ -2752,8 +2883,16 @@ class PsdPascalStringsBlock(PsdResourceBlockABC):
             written += PsdPascalString(value).write(fh, pad=1)
         return written
 
-    def __str__(self) -> str:
-        return indent(repr(self), *self.values)
+    def __repr__(self) -> str:
+        values = tuple(f"'{v}'" for v in self.values)
+        sz = len(values)
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'resourceid={enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            f'values=[  # {sz}\n    {indent(*values, sep=",")},\n],',
+            end='\n)',
+        )
 
 
 @dataclasses.dataclass(repr=False)
@@ -2761,9 +2900,9 @@ class PsdColorBlock(PsdResourceBlockABC):
     """Color structure."""
 
     resourceid: PsdResourceId
-    name: str
     colorspace: PsdColorSpaceType
     components: tuple[int, int, int, int] = (0, 0, 0, 0)
+    name: str = ''
 
     @classmethod
     def read(
@@ -2791,11 +2930,14 @@ class PsdColorBlock(PsdResourceBlockABC):
         fmt = 'h4h' if self.colorspace == PsdColorSpaceType.Lab else 'h4H'
         return psdformat.write(fh, fmt, self.colorspace, *self.components)
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         return indent(
-            repr(self),
-            f'colorspace: {self.colorspace.name}',
-            f'components: {self.components}',
+            f'{self.__class__.__name__}(',
+            f'resourceid={enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            f'colorspace={enumstr(self.colorspace)},',
+            f'components={self.components},',
+            end='\n)',
         )
 
 
@@ -2804,11 +2946,11 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
     """Thumbnail resource format."""
 
     resourceid: PsdResourceId
-    name: str
     format: int
     width: int
     height: int
     rawdata: bytes
+    name: str = ''
 
     @classmethod
     def read(
@@ -2874,7 +3016,7 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
         return self.resourceid.value == 1033
 
     @property
-    def data(self) -> numpy.ndarray:
+    def data(self) -> NDArray[Any]:
         if self.format == 0:
             # kRawRGB
             data = numpy.frombuffer(self.rawdata, dtype=numpy.uint8)
@@ -2891,11 +3033,21 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
             raise ValueError(f'unknown PsdThumbnailBlock format {format!r}')
         return data
 
-    def __str__(self) -> str:
+    @property
+    def title(self) -> str:
+        """Short representation of instance."""
+        return f'{self.__class__.__name__} {self.name!r}'
+
+    def __repr__(self) -> str:
         return indent(
-            repr(self),
-            f'format: {self.format}',
-            f'shape: ({self.height}, {self.width}, 3)',
+            f'{self.__class__.__name__}(',
+            f'resourceid={enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            f'format={self.format},',
+            f'width={self.width},',
+            f'height={self.height},',
+            f'rawdata=...,  # bytes({len(self.rawdata)})',
+            end='\n)',
         )
 
 
@@ -2991,7 +3143,7 @@ class TiffImageSourceData:
     @classmethod
     def fromtiff(
         cls,
-        filename: os.PathLike | str,
+        filename: os.PathLike[Any] | str,
         /,
         pageindex: int = 0,
         unknown: bool = True,
@@ -3009,7 +3161,7 @@ class TiffImageSourceData:
         fh: BinaryIO,
         /,
         psdformat: PsdFormat | bytes | None = None,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
         unknown: bool = True,
     ) -> int:
         """Write ImageResourceData tag value to open file."""
@@ -3029,14 +3181,10 @@ class TiffImageSourceData:
         )
         return written
 
-    @property
-    def byteorder(self):
-        return self.psdformat.byteorder
-
     def tobytes(
         self,
         psdformat: PsdFormat | bytes | None = None,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
         unknown: bool = True,
     ) -> bytes:
         """Return ImageResourceData tag value as bytes."""
@@ -3053,7 +3201,7 @@ class TiffImageSourceData:
     def tifftag(
         self,
         psdformat: PsdFormat | bytes | None = None,
-        compression: PsdCompressionType | int | None = None,
+        compression: PsdCompressionType | None = None,
         unknown: bool = True,
     ) -> tuple[int, int, int, bytes, bool]:
         """Return tifffile.TiffWriter.write extratags item."""
@@ -3062,9 +3210,13 @@ class TiffImageSourceData:
         )
         return 37724, 7, len(value), value, True
 
-    def has_unknowns(self):
+    @property
+    def byteorder(self) -> Literal['>', '<']:
+        return self.psdformat.byteorder
+
+    def has_unknowns(self) -> bool:
         return any(isinstance(tag, PsdUnknown) for tag in self.info) or any(
-            layer.has_unknowns() for layer in self.layers
+            layer.has_unknowns for layer in self.layers
         )
 
     def __eq__(self, other: object) -> bool:
@@ -3080,17 +3232,15 @@ class TiffImageSourceData:
         return bool(self.layers) or len(self.info) > 1
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.name!r}>'
-
-    def __str__(self) -> str:
-        if not self.psdformat:
-            return repr(self)
+        sz = len(self.info)
         return indent(
-            repr(self),
-            repr(self.psdformat),
-            self.layers,
-            self.usermask,
-            *self.info,
+            f'{self.__class__.__name__}(',
+            f'name={self.name!r},' if self.name else '',
+            f'psdformat={enumstr(self.psdformat)},',
+            f'layers={self.layers},',
+            f'usermask={self.usermask},',
+            f'info=[  # {sz}\n    {indent(*self.info, sep=",")},\n],',
+            end='\n)',
         )
 
 
@@ -3100,7 +3250,6 @@ class TiffImageResources:
 
     psdformat: PsdFormat
     blocks: list[PsdResourceBlockABC]
-    blocks_dict: dict[int, PsdResourceBlockABC]  # TODO: use a multidict
     name: str | None = None
 
     @classmethod
@@ -3110,15 +3259,11 @@ class TiffImageResources:
         """Return instance from open file."""
         fname = type(fh).__name__ if name is None else name
         blocks = read_psdblocks(fh, length=length)
-        blocks_dict: dict[int, PsdResourceBlockABC] = {}
-        for block in blocks:
-            if block.resourceid.value not in blocks_dict:
-                blocks_dict[block.resourceid.value] = block
+
         return cls(
             psdformat=PsdFormat.BE32BIT,
             name=fname,
             blocks=blocks,
-            blocks_dict=blocks_dict,
         )
 
     @classmethod
@@ -3132,7 +3277,7 @@ class TiffImageResources:
 
     @classmethod
     def fromtiff(
-        cls, filename: os.PathLike | str, /, pageindex: int = 0
+        cls, filename: os.PathLike[Any] | str, /, pageindex: int = 0
     ) -> TiffImageResources:
         """Return instance from ImageResources tag in TIFF file."""
         data = read_tifftag(filename, 34377, pageindex=pageindex)
@@ -3156,13 +3301,22 @@ class TiffImageResources:
         value = self.tobytes()
         return 34377, 7, len(value), value, True
 
-    def thumbnail(self) -> numpy.ndarray | None:
+    def thumbnail(self) -> NDArray[Any] | None:
         """Return thumbnail image if any, else None."""
         if 1036 in self.blocks_dict:
             return cast(PsdThumbnailBlock, self.blocks_dict[1036]).data
         if 1033 in self.blocks_dict:
             return cast(PsdThumbnailBlock, self.blocks_dict[1033]).data
         return None
+
+    @cached_property
+    def blocks_dict(self) -> dict[int, PsdResourceBlockABC]:
+        # TODO: use a multidict
+        blocks_dict: dict[int, PsdResourceBlockABC] = {}
+        for block in self.blocks:
+            if block.resourceid.value not in blocks_dict:
+                blocks_dict[block.resourceid.value] = block
+        return blocks_dict
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -3182,14 +3336,18 @@ class TiffImageResources:
     def __getitem__(self, key: int) -> PsdResourceBlockABC:
         return self.blocks_dict[key]
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[PsdResourceBlockABC, None, None]:
         yield from self.blocks
 
     def __repr__(self) -> str:
-        return f'<{self.__class__.__name__} {self.name!r}>'
-
-    def __str__(self) -> str:
-        return indent(repr(self), *self.blocks)
+        sz = len(self.blocks)
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'name={self.name!r},' if self.name else '',
+            f'psdformat={enumstr(self.psdformat)},',
+            f'blocks=[  # {sz}\n    {indent(*self.blocks, sep=",")},\n],',
+            end='\n)',
+        )
 
 
 PSD_KEY_64BIT = {
@@ -3262,8 +3420,10 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     # PsdKey.CONTENT_GENERATOR_EXTRA_DATA: PsdUnknown,
     # PsdKey.CURVES: PsdUnknown,
     # PsdKey.EFFECTS_LAYER: PsdUnknown,
+    # PsdKey.FILL_OPACITY: PsdUnknown,
     # PsdKey.FILTER_EFFECTS: PsdUnknown,
     # PsdKey.FILTER_EFFECTS_2: PsdUnknown,
+    # PsdKey.FRAMED_GROUP: PsdUnknown,
     # PsdKey.GRADIENT_FILL_SETTING: PsdUnknown,
     # PsdKey.GRADIENT_MAP: PsdUnknown,
     # PsdKey.HUE_SATURATION: PsdUnknown,
@@ -3388,7 +3548,7 @@ def write_psdtags(
     fh: BinaryIO,
     psdformat: PsdFormat,
     /,
-    compression: PsdCompressionType | int | None,
+    compression: PsdCompressionType | None,
     unknown: bool,
     align: int,
     *tags: PsdKeyABC,
@@ -3402,7 +3562,7 @@ def write_psdtags(
         if isinstance(tag, PsdUnknown):
             if not unknown:
                 continue
-            if tag.psdformat != psdformat:  # type: ignore
+            if tag.psdformat != psdformat:
                 log_warning(
                     f'<PsdUnknown {tag.key.value.decode()!r}> not written'
                 )
@@ -3413,9 +3573,7 @@ def write_psdtags(
         psdformat.write_size(fh, 0, tag.key)
         pos = fh.tell()
         if isinstance(tag, PsdLayers):
-            tag.write(
-                fh, psdformat, compression=compression, unknown=unknown
-            )  # type: ignore
+            tag.write(fh, psdformat, compression=compression, unknown=unknown)
         else:
             tag.write(fh, psdformat)
         size = fh.tell() - pos
@@ -3428,10 +3586,10 @@ def write_psdtags(
 
 
 def read_tifftag(
-    filename: os.PathLike | str, tag: int | str, /, pageindex: int = 0
-) -> bytes | None:
+    filename: os.PathLike[Any] | str, tag: int | str, /, pageindex: int = 0
+) -> Any:
     """Return tag value from TIFF file."""
-    from tifffile import TiffFile  # type: ignore
+    from tifffile import TiffFile
 
     with TiffFile(filename) as tif:
         data = tif.pages[pageindex].tags.valueof(tag)
@@ -3441,7 +3599,7 @@ def read_tifftag(
 
 
 def compress(
-    data: numpy.ndarray, compression: PsdCompressionType, rlecountfmt: str
+    data: NDArray[Any], compression: PsdCompressionType, rlecountfmt: str
 ) -> bytes:
     """Return compressed numpy array."""
     if data.dtype.char not in 'BHf':
@@ -3480,9 +3638,9 @@ def decompress(
     data: bytes,
     compression: PsdCompressionType,
     shape: tuple[int, ...],
-    dtype: numpy.dtype,
+    dtype: numpy.dtype[Any],
     rlecountfmt: str,
-) -> numpy.ndarray:
+) -> NDArray[Any]:
     """Return decompressed numpy array."""
     if dtype.char not in 'BHf':
         raise ValueError(f'data type {dtype!r} not supported')
@@ -3519,10 +3677,10 @@ def decompress(
 
 
 def overlay(
-    *layers: tuple[numpy.ndarray, tuple[int, int] | None],
+    *layers: tuple[NDArray[Any], tuple[int, int] | None],
     shape: tuple[int, ...] | None = None,
     vmax: float | None = None,
-) -> numpy.ndarray:
+) -> NDArray[Any]:
     """Return overlay of image layers with unassociated alpha channels.
 
     Parameters:
@@ -3550,7 +3708,9 @@ def overlay(
     if shape is None:
         shape = layers[0][0].shape
 
-    def over(b, a, offset) -> None:
+    def over(
+        b: NDArray[Any], a: NDArray[Any], offset: tuple[int, int] | None
+    ) -> None:
         assert shape is not None
         if offset is None:
             offset = (0, 0)
@@ -3578,7 +3738,7 @@ def overlay(
     return composite.astype(dtype)
 
 
-def log_warning(msg, *args, **kwargs):
+def log_warning(msg: Any, *args: Any, **kwargs: Any) -> None:
     """Log message with level WARNING."""
     import logging
 
@@ -3593,12 +3753,37 @@ def product(iterable: Iterable[int]) -> int:
     return prod
 
 
-def indent(*args) -> str:
+def indent(*args: Any, sep='', end='') -> str:
     """Return joined string representations of objects with indented lines."""
-    text = '\n'.join(str(arg) for arg in args)
-    return '\n'.join(
-        ('  ' + line if line else line) for line in text.splitlines() if line
-    )[2:]
+    text = (sep + '\n').join(
+        arg if isinstance(arg, str) else repr(arg) for arg in args
+    )
+    return (
+        '\n'.join(
+            ('    ' + line if line else line)
+            for line in text.splitlines()
+            if line
+        )[4:]
+        + end
+    )
+
+
+def enumstr(v: enum.Enum | None, /) -> str:
+    """Return IntEnum or IntFlag as str."""
+    # repr() and str() of enums are type, value, and version dependent
+    if v is None:
+        return 'None'
+    # return f'{v.__class__.__name__}({v.value})'
+    s = repr(v)
+    s = s[1:].split(':', 1)[0]
+    if 'UNKNOWN' in s:
+        s = f'{v.__class__.__name__}({v.value})'
+    elif '|' in s:
+        # IntFlag combination
+        s = s.replace('|', ' | ' + v.__class__.__name__ + '.')
+    elif not hasattr(v, 'name') or v.name is None:
+        s = f'{v.__class__.__name__}({v.value})'
+    return s
 
 
 def test(verbose: bool = False) -> None:
@@ -3738,7 +3923,7 @@ def main(argv: list[str] | None = None) -> int:
                     for layer in isd.layers:
                         image = layer.asarray()
                         if image.size > 0:
-                            imshow(image, title=repr(layer))
+                            imshow(image, title=layer.title)
                             doplot = True
 
             if imageresources is not None:
@@ -3755,14 +3940,14 @@ def main(argv: list[str] | None = None) -> int:
                 if thumbnailblock is not None:
                     thumbnail = thumbnailblock.data
                     if thumbnail.size > 0:
-                        imshow(thumbnail, title=repr(thumbnailblock))
+                        imshow(thumbnail, title=thumbnailblock.title)
                         doplot = True
 
             if doplot:
                 pyplot.show()
 
         except ValueError as exc:
-            # raise  # enable for debugging
+            raise  # enable for debugging
             print(fname, exc)
             continue
     return 0
