@@ -19,7 +19,7 @@ def search(pattern, code, flags=0):
 with open('psdtags/psdtags.py') as fh:
     code = fh.read()
 
-version = search(r"__version__ = '(.*?)'", code)
+version = search(r"__version__ = '(.*?)'", code).replace('.x.x', '.dev')
 
 description = search(r'"""(.*)\.(?:\r\n|\r|\n)', code)
 
@@ -77,5 +77,6 @@ setup(
         'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
     ],
 )
