@@ -17,7 +17,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.4.30
+:Version: 2023.6.15
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -43,7 +43,7 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.3
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.4, 3.12.0b2
 - `NumPy <https://pypi.org/project/numpy/>`_ 1.23.5
 - `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.3.16
   (required for compressing/decompressing image data)
@@ -54,6 +54,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2023.6.15
+
+- Use PsdThumbnailFormat enum for PsdThumbnailBlock.format.
 
 2023.4.30
 
