@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.4.30
+:Version: 2023.6.15
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,7 +73,7 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.3
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.4, 3.12.0b2
 - `NumPy <https://pypi.org/project/numpy/>`_ 1.23.5
 - `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.3.16
   (required for compressing/decompressing image data)
@@ -84,6 +84,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2023.6.15
+
+- Use PsdThumbnailFormat enum for PsdThumbnailBlock.format.
 
 2023.4.30
 
@@ -203,7 +207,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2023.4.30'
+__version__ = '2023.6.15'
 
 __all__ = [
     'PsdBlendMode',
@@ -667,6 +671,21 @@ class PsdCompressionType(enum.IntEnum):
     RLE = 1  # PackBits
     ZIP = 2
     ZIP_PREDICTED = 3
+
+    @classmethod
+    def _missing_(cls, value: object) -> object:
+        assert isinstance(value, int)
+        obj = cls(-1)
+        obj._value_ = value
+        return obj
+
+
+class PsdThumbnailFormat(enum.IntEnum):
+    """PsdThumbnailBlock format types."""
+
+    UNKNOWN = -1
+    RAW_RGB = 0  # kRawRGB
+    JPEG_RGB = 1  # kJpegRGB
 
     @classmethod
     def _missing_(cls, value: object) -> object:
@@ -1480,7 +1499,7 @@ class PsdChannel:
             data = 'data=None,'
         else:
             data = (
-                'data=...,  # numpy.array('
+                'data=...,  # numpy.ndarray('
                 f"{self.data.shape}, '{self.data.dtype}')"
             )
         return indent(
@@ -1853,7 +1872,7 @@ class PsdPatterns(PsdKeyABC):
             colortable = None
         else:
             colortable = (
-                '...,  # numpy.zeros('
+                '...,  # numpy.ndarray('
                 f'{self.colortable.shape}, {self.colortable.dtype})'
             )
         return indent(
@@ -2163,7 +2182,7 @@ class PsdVirtualMemoryArray:
             f'rectangle={self.rectangle},',
             f'pixeldepth={self.pixeldepth},',
             f'compression={enumstr(self.compression)},',
-            f'data=...,  # numpy.empty({self.shape}, {self.dtype})',
+            f'data=...,  # numpy.ndarray({self.shape}, {self.dtype})',
             end='\n)',
         )
 
@@ -2946,7 +2965,7 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
     """Thumbnail resource format."""
 
     resourceid: PsdResourceId
-    format: int
+    format: PsdThumbnailFormat
     width: int
     height: int
     rawdata: bytes
@@ -2984,7 +3003,7 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
         return cls(
             resourceid=resourceid,
             name=name,
-            format=fmt,
+            format=PsdThumbnailFormat(fmt),
             width=width,
             height=height,
             rawdata=rawdata,
@@ -3017,14 +3036,12 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
 
     @property
     def data(self) -> NDArray[Any]:
-        if self.format == 0:
-            # kRawRGB
+        if self.format == PsdThumbnailFormat.RAW_RGB:
             data = numpy.frombuffer(self.rawdata, dtype=numpy.uint8)
             data.shape = (self.height, (self.width * 24 + 31) // 32 * 4)
             data = data[:, : self.width * 3]
             data = data.reshape(self.height, self.width, 3)
-        elif self.format == 1:
-            # kJpegRGB
+        elif self.format == PsdThumbnailFormat.JPEG_RGB:
             from imagecodecs import jpeg8_decode
 
             data = jpeg8_decode(self.rawdata)
@@ -3043,7 +3060,7 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
             f'{self.__class__.__name__}(',
             f'resourceid={enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
-            f'format={self.format},',
+            f'format={enumstr(self.format)},',
             f'width={self.width},',
             f'height={self.height},',
             f'rawdata=...,  # bytes({len(self.rawdata)})',
