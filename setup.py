@@ -16,10 +16,10 @@ def search(pattern, code, flags=0):
     return match.groups()[0]
 
 
-with open('psdtags/psdtags.py') as fh:
+with open('psdtags/psdtags.py', encoding='utf-8') as fh:
     code = fh.read()
 
-version = search(r"__version__ = '(.*?)'", code).replace('.x.x', '.dev')
+version = search(r"__version__ = '(.*?)'", code).replace('.x.x', '.dev0')
 
 description = search(r'"""(.*)\.(?:\r\n|\r|\n)', code)
 
@@ -42,10 +42,10 @@ license = search(
 license = license.replace('# ', '').replace('#', '')
 
 if 'sdist' in sys.argv:
-    with open('LICENSE', 'w') as fh:
+    with open('LICENSE', 'w', encoding='utf-8') as fh:
         fh.write('BSD 3-Clause License\n\n')
         fh.write(license)
-    with open('README.rst', 'w') as fh:
+    with open('README.rst', 'w', encoding='utf-8') as fh:
         fh.write(readme)
 
 setup(
@@ -54,6 +54,7 @@ setup(
     license='BSD',
     description=description,
     long_description=readme,
+    long_description_content_type='text/x-rst',
     author='Christoph Gohlke',
     author_email='cgohlke@cgohlke.com',
     url='https://www.cgohlke.com',
@@ -63,6 +64,7 @@ setup(
         # 'Documentation': 'https://',
     },
     packages=['psdtags'],
+    package_data={'psdtags': ['py.typed']},
     entry_points={'console_scripts': ['psdtags = psdtags.psdtags:main']},
     python_requires='>=3.8',
     install_requires=['numpy'],
