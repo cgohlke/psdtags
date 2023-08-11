@@ -1,6 +1,8 @@
 include LICENSE
 include README.rst
 
+include psdtags/py.typed
+
 include examples/layered_tiff.py
 include examples/background.png
 include examples/product.png
