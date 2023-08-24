@@ -17,7 +17,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.6.15
+:Version: 2023.8.24
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -43,17 +43,21 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.4, 3.12.0b2
-- `NumPy <https://pypi.org/project/numpy/>`_ 1.23.5
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.3.16
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.5, 3.12rc
+- `NumPy <https://pypi.org/project/numpy/>`_ 1.25.2
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.8.12
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.4.12
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.8.12
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.7.1
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.7.2
   (required for plotting)
 
 Revisions
 ---------
+
+2023.8.24
+
+- Fix channel data in layer and pattern blocks must be in big-endian order.
 
 2023.6.15
 
@@ -116,6 +120,9 @@ Additional layer information is not yet supported.
 Consider `psd-tools <https://github.com/psd-tools/psd-tools>`_ and
 `pytoshop <https://github.com/mdboom/pytoshop>`_  for working with
 Adobe Photoshop PSD files.
+
+See also `Reading and writing a Photoshop TIFF <https://www.amyspark.me/blog/
+posts/2021/11/14/reading-and-writing-tiff-psds.html>`_
 
 Examples
 --------
