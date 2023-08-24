@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.6.15
+:Version: 2023.8.24
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,17 +73,21 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.4, 3.12.0b2
-- `NumPy <https://pypi.org/project/numpy/>`_ 1.23.5
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.3.16
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.5, 3.12rc
+- `NumPy <https://pypi.org/project/numpy/>`_ 1.25.2
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.8.12
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.4.12
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.8.12
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.7.1
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.7.2
   (required for plotting)
 
 Revisions
 ---------
+
+2023.8.24
+
+- Fix channel data in layer and pattern blocks must be in big-endian order.
 
 2023.6.15
 
@@ -147,6 +151,9 @@ Consider `psd-tools <https://github.com/psd-tools/psd-tools>`_ and
 `pytoshop <https://github.com/mdboom/pytoshop>`_  for working with
 Adobe Photoshop PSD files.
 
+See also `Reading and writing a Photoshop TIFF <https://www.amyspark.me/blog/
+posts/2021/11/14/reading-and-writing-tiff-psds.html>`_
+
 Examples
 --------
 
@@ -207,7 +214,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2023.6.15'
+__version__ = '2023.8.24'
 
 __all__ = [
     'PsdBlendMode',
@@ -307,8 +314,7 @@ class BytesEnumMeta(enum.EnumMeta):
             cls(value)
         except ValueError:
             return False
-        else:
-            return True
+        return True
 
     def __call__(cls, *args, **kwds) -> Any:  # type: ignore
         try:
@@ -789,10 +795,12 @@ class PsdRectangle(NamedTuple):
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Height and width of rectangle."""
         return (self.bottom - self.top, self.right - self.left)
 
     @property
     def offset(self) -> tuple[int, int]:
+        """Top-left position of rectangle."""
         return self.top, self.left
 
     def __bool__(self) -> bool:
@@ -886,12 +894,14 @@ class PsdFormat(bytes, enum.Enum):
 
     @property
     def byteorder(self) -> Literal['>'] | Literal['<']:
-        if self.value == PsdFormat.BE32BIT or self.value == PsdFormat.BE64BIT:
+        """Byte-order of PSD format."""
+        if self.value in {PsdFormat.BE32BIT, PsdFormat.BE64BIT}:
             return '>'
         return '<'
 
     @property
     def sizeformat(self) -> str:
+        """Struct format string for size values."""
         if self.value == PsdFormat.BE32BIT:
             return '>I'
         if self.value == PsdFormat.LE32BIT:
@@ -902,15 +912,15 @@ class PsdFormat(bytes, enum.Enum):
 
     @property
     def utf16(self) -> str:
-        if self.value == PsdFormat.BE32BIT or self.value == PsdFormat.BE64BIT:
+        """UTF-16 encoding."""
+        if self.value in {PsdFormat.BE32BIT, PsdFormat.BE64BIT}:
             return 'UTF-16-BE'
         return 'UTF-16-LE'
 
     @property
     def isb64(self) -> bool:
-        return (
-            self.value == PsdFormat.BE64BIT or self.value == PsdFormat.LE64BIT
-        )
+        """PSD format is 64-bit."""
+        return self.value in {PsdFormat.BE64BIT, PsdFormat.LE64BIT}
 
     def read(self, fh: BinaryIO, fmt: str) -> Any:
         """Return unpacked values."""
@@ -981,7 +991,6 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
         length: int,
     ) -> PsdKeyABC:
         """Return instance from open file."""
-        pass
 
     @classmethod
     def frombytes(
@@ -995,7 +1004,6 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write instance values to open file."""
-        pass
 
     def tobytes(self, psdformat: PsdFormat, /) -> bytes:
         """Return instance values as bytes."""
@@ -1121,10 +1129,12 @@ class PsdLayers(PsdKeyABC):
 
     @property
     def dtype(self) -> numpy.dtype[Any]:
+        """Data type of layer images."""
         return numpy.dtype(PsdLayers.TYPES[self.key])
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Height and width of layer images."""
         shape = [0, 0]
         for layer in self.layers:
             if layer.rectangle[2] > shape[0]:
@@ -1346,18 +1356,22 @@ class PsdLayer:
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Height and width of layer image."""
         return self.rectangle.shape if self.rectangle else (0, 0)
 
     @property
     def offset(self) -> tuple[int, int]:
+        """Top-left position of layer image."""
         return self.rectangle.offset
 
     @property
     def title(self) -> str:
+        """Name of layer."""
         return f'{self.__class__.__name__} {self.name!r}'
 
     @property
     def has_unknowns(self) -> bool:
+        """Layer has unknown structures in info."""
         return any(isinstance(tag, PsdUnknown) for tag in self.info)
 
     def __eq__(self, other: object) -> bool:
@@ -1428,7 +1442,7 @@ class PsdChannel:
         psdformat: PsdFormat,
         /,
         shape: tuple[int, ...],
-        dtype: DTypeLike | str,
+        dtype: DTypeLike,
     ) -> None:
         """Read channel image data from open file."""
         if self.data is not None:
@@ -1437,7 +1451,6 @@ class PsdChannel:
         self.compression = PsdCompressionType(psdformat.read(fh, 'H'))
 
         data = fh.read(self._data_length - 2)
-        dtype = numpy.dtype(dtype).newbyteorder(psdformat.byteorder)
         rlecountfmt = psdformat.byteorder + ('I' if psdformat.isb64 else 'H')
 
         self.data = decompress(
@@ -1626,6 +1639,7 @@ class PsdLayerMask:
 
     @property
     def param_flags(self) -> PsdLayerMaskParameterFlag:
+        """Layer mask parameter flags."""
         flags = 0
         if self.user_mask_density is not None:
             flags |= PsdLayerMaskParameterFlag.USER_DENSITY
@@ -1639,10 +1653,12 @@ class PsdLayerMask:
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Height and width of layer mask."""
         return self.rectangle.shape if self.rectangle else (0, 0)
 
     @property
     def offset(self) -> tuple[int, int]:
+        """Top-left position of layer mask."""
         return self.rectangle.offset if self.rectangle is not None else (0, 0)
 
     def __bool__(self) -> bool:
@@ -1951,6 +1967,8 @@ class PsdMetadataSetting:
         key = fh.read(4)
         copyonsheet = psdformat.read(fh, '?xxx')
         length = psdformat.read(fh, 'I')
+        # b'mdyn', b'sgrp': int I
+        # b'cust', b'cmls', b'extn', b'mlst', b'tmln': DescriptorStructure
         data = fh.read(length)  # TODO: parse DescriptorStructure
         return cls(
             signature=signature, key=key, data=data, copyonsheet=copyonsheet
@@ -2083,10 +2101,7 @@ class PsdVirtualMemoryArray:
         rectangle = PsdRectangle(*psdformat.read(fh, '4I'))
         pixeldepth = psdformat.read(fh, 'H')
         compression = PsdCompressionType(psdformat.read(fh, 'B'))
-
-        dtype = numpy.dtype(
-            {8: 'B', 16: 'H', 32: 'f'}[pixeldepth]
-        ).newbyteorder(psdformat.byteorder)
+        dtype = {8: 'B', 16: 'H', 32: 'f'}[pixeldepth]
 
         data = decompress(
             fh.read(length - 23),
@@ -2146,16 +2161,19 @@ class PsdVirtualMemoryArray:
 
     @property
     def dtype(self) -> numpy.dtype[Any]:
+        """Data type of virtual memory array."""
         if self.pixeldepth is None:
             return numpy.dtype('B')
         return numpy.dtype({8: 'B', 16: 'H', 32: 'f'}[self.pixeldepth])
 
     @property
     def shape(self) -> tuple[int, int]:
+        """Height and width of virtual memory array."""
         return self.rectangle.shape if self.rectangle else (0, 0)
 
     @property
     def offset(self) -> tuple[int, int]:
+        """Top-left position of virtual memory array."""
         return self.rectangle.offset if self.rectangle else (0, 0)
 
     def __bool__(self) -> bool:
@@ -2615,7 +2633,6 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
         length: int,
     ) -> PsdResourceBlockABC:
         """Return instance from open file."""
-        pass
 
     @classmethod
     def frombytes(
@@ -2636,7 +2653,6 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write instance values to open file."""
-        pass
 
     def tobytes(self, psdformat: PsdFormat, /) -> bytes:
         """Return instance values as bytes."""
@@ -3032,10 +3048,12 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
 
     @property
     def is_bgr(self) -> bool:
+        """Thumbnail image is BGR."""
         return self.resourceid.value == 1033
 
     @property
     def data(self) -> NDArray[Any]:
+        """Thumbnail image array."""
         if self.format == PsdThumbnailFormat.RAW_RGB:
             data = numpy.frombuffer(self.rawdata, dtype=numpy.uint8)
             data.shape = (self.height, (self.width * 24 + 31) // 32 * 4)
@@ -3229,9 +3247,11 @@ class TiffImageSourceData:
 
     @property
     def byteorder(self) -> Literal['>', '<']:
+        """Byte-order of PSD structures."""
         return self.psdformat.byteorder
 
     def has_unknowns(self) -> bool:
+        """ImageSourceData has unknown structures in info or layers."""
         return any(isinstance(tag, PsdUnknown) for tag in self.info) or any(
             layer.has_unknowns for layer in self.layers
         )
@@ -3328,6 +3348,7 @@ class TiffImageResources:
 
     @cached_property
     def blocks_dict(self) -> dict[int, PsdResourceBlockABC]:
+        """Dictionary of PsdResourceBlock by value."""
         # TODO: use a multidict
         blocks_dict: dict[int, PsdResourceBlockABC] = {}
         for block in self.blocks:
@@ -3609,7 +3630,7 @@ def read_tifftag(
     from tifffile import TiffFile
 
     with TiffFile(filename) as tif:
-        data = tif.pages[pageindex].tags.valueof(tag)
+        data = tif.pages[pageindex].aspage().tags.valueof(tag)
         # if data is None:
         #     raise ValueError(f'TIFF file contains no tag {tag!r}')
     return data
@@ -3618,7 +3639,8 @@ def read_tifftag(
 def compress(
     data: NDArray[Any], compression: PsdCompressionType, rlecountfmt: str
 ) -> bytes:
-    """Return compressed numpy array."""
+    """Return compressed big-endian numpy array."""
+    data = data.astype(data.dtype.newbyteorder('>'))
     if data.dtype.char not in 'BHf':
         raise ValueError(f'data type {data.dtype!r} not supported')
 
@@ -3655,15 +3677,15 @@ def decompress(
     data: bytes,
     compression: PsdCompressionType,
     shape: tuple[int, ...],
-    dtype: numpy.dtype[Any],
+    dtype: DTypeLike,
     rlecountfmt: str,
 ) -> NDArray[Any]:
     """Return decompressed numpy array."""
+    dtype = numpy.dtype(dtype).newbyteorder('>')
     if dtype.char not in 'BHf':
         raise ValueError(f'data type {dtype!r} not supported')
 
     uncompressed_size = product(shape) * dtype.itemsize
-
     if uncompressed_size == 0:
         return numpy.zeros(shape, dtype=dtype)
 
@@ -3924,24 +3946,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         files = argv[1:]
 
-    doplot = False
     for fname in files:
         name = os.path.split(fname)[-1]
+        doplot = False
         try:
             with TiffFile(fname) as tif:
-                imagesourcedata = tif.pages[0].tags.valueof(37724)
-                imageresources = tif.pages[0].tags.valueof(34377)
-
-            if imagesourcedata is not None:
-                isd = TiffImageSourceData.frombytes(imagesourcedata, name=name)
-                print(isd)
-                print()
-                if isd.layers and len(files) == 1:
-                    for layer in isd.layers:
-                        image = layer.asarray()
-                        if image.size > 0:
-                            imshow(image, title=layer.title)
-                            doplot = True
+                tags = tif.pages[0].aspage().tags
+                imagesourcedata = tags.valueof(37724)
+                imageresources = tags.valueof(34377)
 
             if imageresources is not None:
                 irs = TiffImageResources.frombytes(imageresources, name=name)
@@ -3959,12 +3971,28 @@ def main(argv: list[str] | None = None) -> int:
                     if thumbnail.size > 0:
                         imshow(thumbnail, title=thumbnailblock.title)
                         doplot = True
+                    else:
+                        print('Thumbnail image size is zero')
+                        print()
+
+            if imagesourcedata is not None:
+                isd = TiffImageSourceData.frombytes(imagesourcedata, name=name)
+                print(isd)
+                print()
+                if isd.layers and len(files) == 1:
+                    for layer in isd.layers:
+                        image = layer.asarray()
+                        if image.size > 0:
+                            imshow(image, title=layer.title)
+                            doplot = True
+                        else:
+                            print(f'Layer {layer.name!r} image size is zero')
 
             if doplot:
                 pyplot.show()
 
         except ValueError as exc:
-            raise  # enable for debugging
+            # raise  # enable for debugging
             print(fname, exc)
             continue
     return 0
