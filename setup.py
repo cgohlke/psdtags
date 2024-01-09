@@ -66,7 +66,7 @@ setup(
     packages=['psdtags'],
     package_data={'psdtags': ['py.typed']},
     entry_points={'console_scripts': ['psdtags = psdtags.psdtags:main']},
-    python_requires='>=3.8',
+    python_requires='>=3.9',
     install_requires=['numpy'],
     extras_require={'all': ['matplotlib', 'tifffile', 'imagecodecs']},
     platforms=['any'],
