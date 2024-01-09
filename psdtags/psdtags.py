@@ -1,6 +1,6 @@
 # psdtags/psdtags.py
 
-# Copyright (c) 2022-2023, Christoph Gohlke
+# Copyright (c) 2022-2024, Christoph Gohlke
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.8.24
+:Version: 2024.1.8
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,17 +73,23 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.5, 3.12rc
-- `NumPy <https://pypi.org/project/numpy/>`_ 1.25.2
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.8.12
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.7, 3.12.1
+- `NumPy <https://pypi.org/project/numpy/>`_ 1.26.3
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.1.1
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.8.12
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.12.9
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.7.2
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.2
   (required for plotting)
 
 Revisions
 ---------
+
+2024.1.8
+
+- Add option to compress layer channels in multiple threads.
+- Improve logging.
+- Drop support for Python 3.9 and numpy < 1.23 (NEP29).
 
 2023.8.24
 
@@ -151,8 +157,11 @@ Consider `psd-tools <https://github.com/psd-tools/psd-tools>`_ and
 `pytoshop <https://github.com/mdboom/pytoshop>`_  for working with
 Adobe Photoshop PSD files.
 
+Layered TIFF files can be read or written by Photoshop, Affinity Photo, and
+Krita.
+
 See also `Reading and writing a Photoshop TIFF <https://www.amyspark.me/blog/
-posts/2021/11/14/reading-and-writing-tiff-psds.html>`_
+posts/2021/11/14/reading-and-writing-tiff-psds.html>`_.
 
 Examples
 --------
@@ -194,7 +203,7 @@ Write the image, ImageSourceData and ImageResources to a new layered TIFF file:
 ...     byteorder=isd.byteorder,  # must match ImageSourceData
 ...     photometric='rgb',  # must match ImageSourceData
 ...     metadata=None,  # do not write any tifffile specific metadata
-...     extratags=[isd.tifftag(), res.tifftag()],
+...     extratags=[isd.tifftag(maxworkers=4), res.tifftag()],
 ... )
 
 Verify that the new layered TIFF file contains readable ImageSourceData:
@@ -214,7 +223,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2023.8.24'
+__version__ = '2024.1.8'
 
 __all__ = [
     'PsdBlendMode',
@@ -277,29 +286,31 @@ __all__ = [
     'overlay',
     'compress',
     'decompress',
+    'logger',
     'REPR_MAXLEN',
 ]
 
 
-import sys
-import os
-import io
-import enum
-import struct
-import zlib
-import dataclasses
 import abc
+import dataclasses
+import enum
+import io
+import logging
+import os
+import struct
+import sys
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 import numpy
 
-from typing import TYPE_CHECKING, cast, NamedTuple
-
 if TYPE_CHECKING:
-    from typing import Any, BinaryIO, Literal
     from collections.abc import Generator, Iterable
+    from typing import Any, BinaryIO, Literal
 
-    from numpy.typing import NDArray, DTypeLike
+    from numpy.typing import DTypeLike, NDArray
 
 
 REPR_MAXLEN = 24
@@ -328,7 +339,7 @@ class BytesEnumMeta(enum.EnumMeta):
                 c = enum.EnumMeta.__call__(cls, *args, **kwds)
             except Exception:
                 if args and len(args[0]) == 4 and args[0].strip().isalnum():
-                    log_warning(
+                    logger().warning(
                         f'psdtags.{cls.__name__}({args[0]!r}) not defined'
                     )
                     newargs = (b'?unk',) + args[1:]
@@ -893,7 +904,7 @@ class PsdFormat(bytes, enum.Enum):
     LE64BIT = b'46B8'
 
     @property
-    def byteorder(self) -> Literal['>'] | Literal['<']:
+    def byteorder(self) -> Literal['>', '<']:
         """Byte-order of PSD format."""
         if self.value in {PsdFormat.BE32BIT, PsdFormat.BE64BIT}:
             return '>'
@@ -1025,9 +1036,9 @@ class PsdLayers(PsdKeyABC):
     has_transparency: bool = False
 
     TYPES = {
-        PsdKey.LAYER: 'B',
-        PsdKey.LAYER_16: 'H',
-        PsdKey.LAYER_32: 'f',
+        PsdKey.LAYER: 'B',  # uint8
+        PsdKey.LAYER_16: 'H',  # uint16
+        PsdKey.LAYER_32: 'f',  # float32
     }
 
     @classmethod
@@ -1090,6 +1101,7 @@ class PsdLayers(PsdKeyABC):
         /,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
+        maxworkers: int = 1,
     ) -> int:
         """Write layer records and channel info data to open file."""
         pos = fh.tell()
@@ -1101,7 +1113,11 @@ class PsdLayers(PsdKeyABC):
         channel_image_data = []
         for layer in self.layers:
             data = layer.write(
-                fh, psdformat, compression=compression, unknown=unknown
+                fh,
+                psdformat,
+                compression=compression,
+                unknown=unknown,
+                maxworkers=maxworkers,
             )
             channel_image_data.append(data)
         # channel info data
@@ -1120,10 +1136,17 @@ class PsdLayers(PsdKeyABC):
         /,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
+        maxworkers: int = 1,
     ) -> bytes:
         """Return layer records and channel info data as bytes."""
         with io.BytesIO() as fh:
-            self.write(fh, psdformat, compression=compression, unknown=unknown)
+            self.write(
+                fh,
+                psdformat,
+                compression=compression,
+                unknown=unknown,
+                maxworkers=maxworkers,
+            )
             data = fh.getvalue()
         return data
 
@@ -1260,15 +1283,32 @@ class PsdLayer:
         /,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
+        maxworkers: int = 1,
     ) -> bytes:
         """Write layer record to open file and return channel data records."""
         psdformat.write(fh, 'iiii', *self.rectangle)
         psdformat.write(fh, 'H', len(self.channels))
 
         channel_image_data = []
-        for channel in self.channels:
-            data = channel.write(fh, psdformat, compression=compression)
-            channel_image_data.append(data)
+        if (
+            compression is None
+            or compression == 0
+            or maxworkers <= 1
+            or len(self.channels) == 1
+        ):
+            for channel in self.channels:
+                data = channel.write(fh, psdformat, compression=compression)
+                channel_image_data.append(data)
+        else:
+
+            def func(channel):
+                return channel.tobytes(psdformat, compression=compression)
+
+            maxworkers = min(maxworkers, len(self.channels))
+            with ThreadPoolExecutor(maxworkers) as executor:
+                for info, data in executor.map(func, self.channels):
+                    fh.write(info)
+                    channel_image_data.append(data)
 
         psdformat.write_signature(fh, b'8BIM')  # blend mode signature
         psdformat.write(
@@ -1300,7 +1340,7 @@ class PsdLayer:
 
         PsdPascalString(self.name).write(fh, pad=4)
 
-        write_psdtags(fh, psdformat, compression, unknown, 2, *self.info)
+        write_psdtags(fh, psdformat, compression, unknown, 1, 2, *self.info)
 
         extra_size = fh.tell() - pos
         fh.seek(extra_size_pos)
@@ -1315,11 +1355,16 @@ class PsdLayer:
         /,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
+        maxworkers: int = 1,
     ) -> tuple[bytes, bytes]:
         """Return layer and channel data records."""
         with io.BytesIO() as fh:
             channel_image_data = self.write(
-                fh, psdformat, compression=compression, unknown=unknown
+                fh,
+                psdformat,
+                compression=compression,
+                unknown=unknown,
+                maxworkers=maxworkers,
             )
             layer_record = fh.getvalue()
         return layer_record, channel_image_data
@@ -2237,7 +2282,7 @@ class PsdSectionDividerSetting(PsdKeyABC):
         return cls(kind=kind, blendmode=blendmode, subtype=subtype)
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
-        """Write section divider settin to open file."""
+        """Write section divider setting to open file."""
         psdformat.write(fh, 'I', self.kind.value)
         if self.blendmode is None:
             return 4
@@ -3143,7 +3188,7 @@ class TiffImageSourceData:
                 )
             elif unknown:
                 info.append(PsdUnknown.read(fh, psdformat, key, length=size))
-                # log_warning(
+                # logger().warning(
                 #     f"<TiffImageSourceData '{name}'> skipped {size} bytes "
                 #     f"in {key.value.decode()!r} info"
                 # )
@@ -3151,11 +3196,11 @@ class TiffImageSourceData:
             fh.seek(pos + size)
 
         if layers is None:
-            log_warning(f'<{cls.__name__} {name!r}> contains no layers')
+            logger().warning(f'<{cls.__name__} {name!r}> contains no layers')
             layers = PsdLayers(PsdKey.LAYER)
 
         if usermask is None:
-            log_warning(f'<{cls.__name__} {name!r}> contains no usermask')
+            logger().warning(f'<{cls.__name__} {name!r}> contains no usermask')
             usermask = PsdUserMask()
 
         return cls(
@@ -3198,6 +3243,7 @@ class TiffImageSourceData:
         psdformat: PsdFormat | bytes | None = None,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
+        maxworkers: int = 1,
     ) -> int:
         """Write ImageResourceData tag value to open file."""
         psdformat = (
@@ -3209,6 +3255,7 @@ class TiffImageSourceData:
             psdformat,
             compression,
             unknown,
+            maxworkers,
             4,
             self.layers,
             self.usermask,
@@ -3221,6 +3268,7 @@ class TiffImageSourceData:
         psdformat: PsdFormat | bytes | None = None,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
+        maxworkers: int = 1,
     ) -> bytes:
         """Return ImageResourceData tag value as bytes."""
         with io.BytesIO() as fh:
@@ -3229,6 +3277,7 @@ class TiffImageSourceData:
                 psdformat,
                 compression=compression,
                 unknown=unknown,
+                maxworkers=maxworkers,
             )
             value = fh.getvalue()
         return value
@@ -3238,10 +3287,14 @@ class TiffImageSourceData:
         psdformat: PsdFormat | bytes | None = None,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
+        maxworkers: int = 1,
     ) -> tuple[int, int, int, bytes, bool]:
         """Return tifffile.TiffWriter.write extratags item."""
         value = self.tobytes(
-            psdformat, compression=compression, unknown=unknown
+            psdformat,
+            compression=compression,
+            unknown=unknown,
+            maxworkers=maxworkers,
         )
         return 37724, 7, len(value), value, True
 
@@ -3588,6 +3641,7 @@ def write_psdtags(
     /,
     compression: PsdCompressionType | None,
     unknown: bool,
+    maxworkers: int,
     align: int,
     *tags: PsdKeyABC,
 ) -> int:
@@ -3601,7 +3655,7 @@ def write_psdtags(
             if not unknown:
                 continue
             if tag.psdformat != psdformat:
-                log_warning(
+                logger().warning(
                     f'<PsdUnknown {tag.key.value.decode()!r}> not written'
                 )
                 continue
@@ -3611,7 +3665,13 @@ def write_psdtags(
         psdformat.write_size(fh, 0, tag.key)
         pos = fh.tell()
         if isinstance(tag, PsdLayers):
-            tag.write(fh, psdformat, compression=compression, unknown=unknown)
+            tag.write(
+                fh,
+                psdformat,
+                compression=compression,
+                unknown=unknown,
+                maxworkers=maxworkers,
+            )
         else:
             tag.write(fh, psdformat)
         size = fh.tell() - pos
@@ -3693,7 +3753,8 @@ def decompress(
         return numpy.frombuffer(data, dtype=dtype).reshape(shape).copy()
 
     if compression == PsdCompressionType.ZIP:
-        data = zlib.decompress(data)
+        # this fails to decompress zlib streams written by Krita
+        data = zlib.decompress(data, bufsize=uncompressed_size)
         return numpy.frombuffer(data, dtype=dtype).reshape(shape).copy()
 
     if compression == PsdCompressionType.ZIP_PREDICTED:
@@ -3747,6 +3808,9 @@ def overlay(
     if shape is None:
         shape = layers[0][0].shape
 
+    if len(shape) != 2:
+        raise ValueError(f'invalid canvas {shape=}')
+
     def over(
         b: NDArray[Any], a: NDArray[Any], offset: tuple[int, int] | None
     ) -> None:
@@ -3772,16 +3836,17 @@ def overlay(
 
     composite = numpy.zeros((*shape, 4))
     for layer in layers:
+        layer_shape = layer[0].shape
+        if len(layer_shape) != 3 or layer_shape[2] != 4:
+            raise ValueError(f'not an RGBA image {layer_shape=}')
         over(composite, layer[0] / vmax, layer[1])
     composite *= vmax
     return composite.astype(dtype)
 
 
-def log_warning(msg: Any, *args: Any, **kwargs: Any) -> None:
-    """Log message with level WARNING."""
-    import logging
-
-    logging.getLogger(__name__).warning(msg, *args, **kwargs)
+def logger() -> logging.Logger:
+    """Return logging.getLogger('psdtags')."""
+    return logging.getLogger(__name__.replace('psdtags.psdtags', 'psdtags'))
 
 
 def product(iterable: Iterable[int]) -> int:
@@ -3828,8 +3893,9 @@ def enumstr(v: enum.Enum | None, /) -> str:
 def test(verbose: bool = False) -> None:
     """Test TiffImageSourceData and TiffImageResources classes."""
     from glob import glob
-    import tifffile
+
     import imagecodecs
+    import tifffile
 
     print(f'Python {sys.version}')
     print(
@@ -3876,6 +3942,7 @@ def test(verbose: bool = False) -> None:
                     psdformat=psdformat,
                     compression=compression,
                     unknown=unknown,
+                    maxworkers=6,
                 )
                 isd2 = TiffImageSourceData.frombytes(buffer)
                 str(isd2)
@@ -3911,6 +3978,7 @@ def main(argv: list[str] | None = None) -> int:
 
     """
     from glob import glob
+
     from matplotlib import pyplot
     from tifffile import TiffFile, imshow
 
