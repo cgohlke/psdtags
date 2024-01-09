@@ -13,12 +13,10 @@ See https://github.com/cgohlke/psdtags/issues/4
 
 from __future__ import annotations
 
-import numpy
 import imagecodecs
+import numpy
 import tifffile
-
 from psdtags import (
-    __version__,
     PsdBlendMode,
     PsdChannel,
     PsdChannelId,
@@ -37,6 +35,7 @@ from psdtags import (
     PsdString,
     PsdUserMask,
     TiffImageSourceData,
+    __version__,
     overlay,
 )
 
@@ -249,28 +248,30 @@ composite = overlay(
 )
 
 # write a layered TIFF file
-tifffile.imwrite(
-    'layered.tif',
-    # write composite as main TIFF image, accessible to regular TIFF readers
-    composite,
-    photometric='rgb',
-    compression='adobe_deflate',
-    # 72 dpi resolution
-    resolution=((720000, 10000), (720000, 10000)),
-    resolutionunit='inch',
-    # do not write tifffile specific metadata
-    metadata=None,
-    # write layers and sRGB profile as extra tags
-    extratags=[
-        # ImageSourceData tag
-        image_source_data.tifftag(),
-        # InterColorProfile tag
-        (34675, 7, None, imagecodecs.cms_profile('srgb'), True),
-    ],
-)
+with tifffile.Timer('write'):
+    tifffile.imwrite(
+        'layered.tif',
+        # write composite as main TIFF image, accessible to regular TIF readers
+        composite,
+        photometric='rgb',
+        compression='adobe_deflate',
+        # 72 dpi resolution
+        resolution=((720000, 10000), (720000, 10000)),
+        resolutionunit='inch',
+        # do not write tifffile specific metadata
+        metadata=None,
+        # write layers and sRGB profile as extra tags
+        extratags=[
+            # ImageSourceData tag; use multiple threads to compress channels
+            image_source_data.tifftag(maxworkers=4),
+            # InterColorProfile tag
+            (34675, 7, None, imagecodecs.cms_profile('srgb'), True),
+        ],
+    )
 
 # read the ImageSourceData structure from the TIFF file
-isd = TiffImageSourceData.fromtiff('layered.tif')
+with tifffile.Timer('read'):
+    isd = TiffImageSourceData.fromtiff('layered.tif')
 print(isd)
 print(f'psdtags {__version__}')
 
