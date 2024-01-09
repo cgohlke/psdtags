@@ -17,7 +17,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2023.8.24
+:Version: 2024.1.8
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -43,17 +43,23 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.5, 3.12rc
-- `NumPy <https://pypi.org/project/numpy/>`_ 1.25.2
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2023.8.12
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.7, 3.12.1
+- `NumPy <https://pypi.org/project/numpy/>`_ 1.26.3
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.1.1
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.8.12
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.12.9
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.7.2
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.2
   (required for plotting)
 
 Revisions
 ---------
+
+2024.1.8
+
+- Add option to compress layer channels in multiple threads.
+- Improve logging.
+- Drop support for Python 3.9 and numpy < 1.23 (NEP29).
 
 2023.8.24
 
@@ -121,8 +127,11 @@ Consider `psd-tools <https://github.com/psd-tools/psd-tools>`_ and
 `pytoshop <https://github.com/mdboom/pytoshop>`_  for working with
 Adobe Photoshop PSD files.
 
+Layered TIFF files can be read or written by Photoshop, Affinity Photo, and
+Krita.
+
 See also `Reading and writing a Photoshop TIFF <https://www.amyspark.me/blog/
-posts/2021/11/14/reading-and-writing-tiff-psds.html>`_
+posts/2021/11/14/reading-and-writing-tiff-psds.html>`_.
 
 Examples
 --------
@@ -164,7 +173,7 @@ Write the image, ImageSourceData and ImageResources to a new layered TIFF file:
 ...     byteorder=isd.byteorder,  # must match ImageSourceData
 ...     photometric='rgb',  # must match ImageSourceData
 ...     metadata=None,  # do not write any tifffile specific metadata
-...     extratags=[isd.tifftag(), res.tifftag()],
+...     extratags=[isd.tifftag(maxworkers=4), res.tifftag()],
 ... )
 
 Verify that the new layered TIFF file contains readable ImageSourceData:
