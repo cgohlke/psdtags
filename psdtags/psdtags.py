@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2024.1.8
+:Version: 2024.1.15
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -84,6 +84,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2024.1.15
+
+- Fix multi-threading.
 
 2024.1.8
 
@@ -223,7 +227,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2024.1.8'
+__version__ = '2024.1.15'
 
 __all__ = [
     'PsdBlendMode',
@@ -1290,12 +1294,7 @@ class PsdLayer:
         psdformat.write(fh, 'H', len(self.channels))
 
         channel_image_data = []
-        if (
-            compression is None
-            or compression == 0
-            or maxworkers <= 1
-            or len(self.channels) == 1
-        ):
+        if compression == 0 or maxworkers <= 1 or len(self.channels) == 1:
             for channel in self.channels:
                 data = channel.write(fh, psdformat, compression=compression)
                 channel_image_data.append(data)
