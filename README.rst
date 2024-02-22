@@ -17,7 +17,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2024.1.15
+:Version: 2024.2.22
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -43,17 +43,23 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.7, 3.12.1
-- `NumPy <https://pypi.org/project/numpy/>`_ 1.26.3
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.8, 3.12.2
+- `NumPy <https://pypi.org/project/numpy/>`_ 1.26.4
 - `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.1.1
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.12.9
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.2.12
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.2
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.3
   (required for plotting)
 
 Revisions
 ---------
+
+2024.2.22
+
+- Fix reading PsdBoolean (#10).
+- Fix order of PsdReferencePoint coordinates (breaking).
+- Allow reading unaligned PsdLayer blending_ranges.
 
 2024.1.15
 
