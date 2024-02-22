@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2024.1.15
+:Version: 2024.2.22
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,17 +73,23 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.7, 3.12.1
-- `NumPy <https://pypi.org/project/numpy/>`_ 1.26.3
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.8, 3.12.2
+- `NumPy <https://pypi.org/project/numpy/>`_ 1.26.4
 - `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.1.1
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2023.12.9
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.2.12
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.2
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.3
   (required for plotting)
 
 Revisions
 ---------
+
+2024.2.22
+
+- Fix reading PsdBoolean (#10).
+- Fix order of PsdReferencePoint coordinates (breaking).
+- Allow reading unaligned PsdLayer blending_ranges.
 
 2024.1.15
 
@@ -227,7 +233,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2024.1.15'
+__version__ = '2024.2.22'
 
 __all__ = [
     'PsdBlendMode',
@@ -382,6 +388,7 @@ class PsdKey(BytesEnum):
     BLEND_CLIPPING_ELEMENTS = b'clbl'
     BLEND_INTERIOR_ELEMENTS = b'infx'
     BRIGHTNESS_AND_CONTRAST = b'brit'
+    # CAI = b'CAI '
     CHANNEL_BLENDING_RESTRICTIONS_SETTING = b'brst'
     CHANNEL_MIXER = b'mixr'
     COLOR_BALANCE = b'blnc'
@@ -397,6 +404,7 @@ class PsdKey(BytesEnum):
     FILTER_MASK = b'FMsk'
     FOREIGN_EFFECT_ID = b'ffxi'
     FRAMED_GROUP = b'frgb'
+    # GENI = b'GenI'
     GRADIENT_FILL_SETTING = b'GdFl'
     GRADIENT_MAP = b'grdm'
     HUE_SATURATION = b'hue2'
@@ -1249,8 +1257,13 @@ class PsdLayer:
 
         # layer blending ranges
         nbytes = psdformat.read(fh, 'I')
-        assert nbytes % 4 == 0
         blending_ranges = psdformat.read(fh, 'i' * (nbytes // 4))
+        if nbytes % 4:
+            # see https://github.com/theaboutbox/psdtags
+            logger().warning(
+                f'<{cls.__name__} blending_ranges {nbytes=} not divisible by 4'
+            )
+            fh.read(nbytes % 4)
 
         name = str(PsdPascalString.read(fh, pad=4))
 
@@ -2335,8 +2348,8 @@ class PsdSheetColorSetting(PsdKeyABC):
 class PsdReferencePoint(PsdKeyABC):
     """Reference point."""
 
-    y: float
     x: float
+    y: float
     key = PsdKey.REFERENCE_POINT
 
     @classmethod
@@ -2353,10 +2366,10 @@ class PsdReferencePoint(PsdKeyABC):
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write reference point to open file."""
-        return psdformat.write(fh, 'dd', self.y, self.x)
+        return psdformat.write(fh, 'dd', self.x, self.y)
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}({self.y}, {self.x})'
+        return f'{self.__class__.__name__}({self.x}, {self.y})'
 
 
 @dataclasses.dataclass(repr=False)
@@ -2487,7 +2500,7 @@ class PsdBoolean(PsdKeyABC):
         length: int,
     ) -> PsdBoolean:
         """Return instance from open file."""
-        value = bool(fh.read(1))
+        value = bool(fh.read(1)[0])
         fh.read(3)
         return cls(key=key, value=value)
 
@@ -2776,7 +2789,7 @@ class PsdVersionBlock(PsdResourceBlockABC):
     ) -> PsdVersionBlock:
         """Return instance from open file."""
         version = psdformat.read(fh, 'I')
-        has_real_merged_data = bool(fh.read(1))
+        has_real_merged_data = bool(fh.read(1)[0])
         writer_name = str(PsdUnicodeString.read(fh, psdformat))
         reader_name = str(PsdUnicodeString.read(fh, psdformat))
         file_version = psdformat.read(fh, 'I')
@@ -3782,6 +3795,9 @@ def overlay(
 ) -> NDArray[Any]:
     """Return overlay of image layers with unassociated alpha channels.
 
+    Consider using `image-blender <https://pypi.org/project/image-blender>`_
+    for an implementation of Adobe Photoshop's blend modes.
+
     Parameters:
         layers:
             RGBA image array and offset of layer in canvas.
@@ -3912,7 +3928,7 @@ def test(verbose: bool = False) -> None:
                 print(res1)
                 print()
             res2 = TiffImageResources.frombytes(res1.tobytes())
-            assert res1 == res2
+            assert res1 == res2, (filename, res1, res2)
 
         isd1 = TiffImageSourceData.fromtiff(filename)
         assert str(isd1)
@@ -3947,13 +3963,13 @@ def test(verbose: bool = False) -> None:
                 str(isd2)
                 if isd2:
                     assert isd2.psdformat == psdformat
-                assert isd1 == isd2
+                assert isd1 == isd2, (filename, isd1, isd2)
                 # test not equal after changing data
                 if isd2.layers:
                     ch0 = isd2.layers[0].channels[0].data
                     if ch0 is not None and ch0.size > 0:
                         ch0[..., 0] = 123
-                        assert isd1 != isd2
+                        assert isd1 != isd2, (filename, isd1, isd2)
 
         # test tifftag value
         tagid, dtype, size, tagvalue, writeonce = isd1.tifftag()
