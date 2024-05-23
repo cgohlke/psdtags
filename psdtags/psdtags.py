@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2024.2.22
+:Version: 2024.5.24
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,17 +73,21 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.8, 3.12.2
+- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.9, 3.12.3
 - `NumPy <https://pypi.org/project/numpy/>`_ 1.26.4
 - `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.1.1
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.2.12
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.5.22
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.3
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.4
   (required for plotting)
 
 Revisions
 ---------
+
+2024.5.24
+
+- Fix GitHub not correctly rendering docstring examples.
 
 2024.2.22
 
@@ -170,8 +174,8 @@ Adobe Photoshop PSD files.
 Layered TIFF files can be read or written by Photoshop, Affinity Photo, and
 Krita.
 
-See also `Reading and writing a Photoshop TIFF <https://www.amyspark.me/blog/
-posts/2021/11/14/reading-and-writing-tiff-psds.html>`_.
+See also `Reading and writing a Photoshop TIFF
+<https://www.amyspark.me/blog/posts/2021/11/14/reading-and-writing-tiff-psds.html>`_.
 
 Examples
 --------
@@ -184,6 +188,7 @@ all the channels:
 ...     layer.name
 ...     for channel in layer.channels:
 ...         ch = channel.data  # a numpy array
+...
 'Background'
 'Reflect1'
 'Reflect2'
@@ -200,6 +205,7 @@ and get the thumbnail image:
 >>> res = TiffImageResources.fromtiff('layered.tif')
 >>> for block in res.blocks:
 ...     blockname = block.name
+...
 >>> res.thumbnail().shape
 (90, 160, 3)
 
@@ -233,7 +239,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2024.2.22'
+__version__ = '2024.5.24'
 
 __all__ = [
     'PsdBlendMode',
