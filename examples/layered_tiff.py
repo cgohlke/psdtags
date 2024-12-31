@@ -47,9 +47,9 @@ background = numpy.empty((*shape, 4), numpy.uint8)
 background.fill(255)
 
 # read individual layer images from files
-reflection: numpy.ndarray = imagecodecs.imread('reflection.png')
-shadow: numpy.ndarray = imagecodecs.imread('shadow.png')
-product: numpy.ndarray = imagecodecs.imread('product.png')
+reflection = imagecodecs.imread('reflection.png')
+shadow = imagecodecs.imread('shadow.png')
+product = imagecodecs.imread('product.png')
 
 # positions of layers in canvas
 background_offset = (0, 0)
