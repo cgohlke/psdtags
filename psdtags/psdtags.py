@@ -1,6 +1,6 @@
 # psdtags/psdtags.py
 
-# Copyright (c) 2022-2024, Christoph Gohlke
+# Copyright (c) 2022-2025, Christoph Gohlke
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -38,7 +38,7 @@ TIFF file created by Photoshop.
 
 The format is specified in the
 `Adobe Photoshop TIFF Technical Notes (March 22, 2002)
-<https://www.awaresystems.be/imaging/tiff/specification/TIFFphotoshop.pdf>`_
+<https://download.osgeo.org/libtiff/doc/TIFFphotoshop.pdf>`_
 and
 `Adobe Photoshop File Formats Specification (November 2019)
 <https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/>`_.
@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2024.5.24
+:Version: 2025.1.1
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,21 +73,26 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.9, 3.12.3
-- `NumPy <https://pypi.org/project/numpy/>`_ 1.26.4
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.1.1
+- `CPython <https://www.python.org>`_ 3.10.11, 3.11.9, 3.12.8, 3.13.1 64-bit
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.1.3
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.12.30
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.5.22
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.12.12
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.4
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.0
   (required for plotting)
 
 Revisions
 ---------
 
+2025.1.1
+
+- Improve type hints.
+- Support Python 3.13.
+
 2024.5.24
 
-- Fix GitHub not correctly rendering docstring examples.
+- Fix docstring examples not correctly rendered on GitHub.
 
 2024.2.22
 
@@ -239,9 +244,10 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2024.5.24'
+__version__ = '2025.1.1'
 
 __all__ = [
+    '__version__',
     'PsdBlendMode',
     'PsdBoolean',
     'PsdBytesBlock',
@@ -336,14 +342,14 @@ REPR_MAXLEN = 24
 class BytesEnumMeta(enum.EnumMeta):
     """Metaclass for bytes enums."""
 
-    def __contains__(cls, value: object) -> bool:
+    def __contains__(cls: Any, value: object) -> bool:
         try:
             cls(value)
         except ValueError:
             return False
         return True
 
-    def __call__(cls, *args, **kwds) -> Any:  # type: ignore
+    def __call__(cls: Any, *args: Any, **kwds: Any) -> Any:
         try:
             # big endian
             c = enum.EnumMeta.__call__(cls, *args, **kwds)
@@ -931,11 +937,14 @@ class PsdFormat(bytes, enum.Enum):
     @property
     def sizeformat(self) -> str:
         """Struct format string for size values."""
-        if self.value == PsdFormat.BE32BIT:
+        if self.value == b'8BIM':
+            # BE32BIT
             return '>I'
-        if self.value == PsdFormat.LE32BIT:
+        if self.value == b'MIB8':
+            # LE32BIT
             return '<I'
-        if self.value == PsdFormat.BE64BIT:
+        if self.value == b'8B64':
+            # BE64BIT
             return '>Q'
         return '<Q'
 
@@ -1201,7 +1210,7 @@ class PsdLayers(PsdKeyABC):
     def __setitem__(self, key: int, value: PsdLayer) -> None:
         self.layers[key] = value
 
-    def __iter__(self) -> Generator[PsdLayer, None, None]:
+    def __iter__(self) -> Generator[PsdLayer]:
         yield from self.layers
 
     def __repr__(self) -> str:
@@ -1319,7 +1328,7 @@ class PsdLayer:
                 channel_image_data.append(data)
         else:
 
-            def func(channel):
+            def func(channel: PsdChannel) -> tuple[bytes, bytes]:
                 return channel.tobytes(psdformat, compression=compression)
 
             maxworkers = min(maxworkers, len(self.channels))
@@ -1566,7 +1575,9 @@ class PsdChannel:
         return (
             isinstance(other, self.__class__)
             and self.channelid == other.channelid
-            and numpy.array_equal(self.data, other.data)  # type: ignore
+            and numpy.array_equal(
+                self.data, other.data  # type: ignore[arg-type]
+            )
             # and self.compression == other.compression
         )
 
@@ -2123,7 +2134,7 @@ class PsdVirtualMemoryArrayList:
     def __setitem__(self, key: int, value: PsdVirtualMemoryArray) -> None:
         self.channels[key] = value
 
-    def __iter__(self) -> Generator[PsdVirtualMemoryArray, None, None]:
+    def __iter__(self) -> Generator[PsdVirtualMemoryArray]:
         yield from self.channels
 
     def __repr__(self) -> str:
@@ -2249,7 +2260,9 @@ class PsdVirtualMemoryArray:
             and self.depth == other.depth
             and self.pixeldepth == other.pixeldepth
             and self.rectangle == other.rectangle
-            and numpy.array_equal(self.data, other.data)  # type: ignore
+            and numpy.array_equal(
+                self.data, other.data  # type: ignore[arg-type]
+            )
             # and self.compression == other.compression
         )
 
@@ -3445,7 +3458,7 @@ class TiffImageResources:
     def __getitem__(self, key: int) -> PsdResourceBlockABC:
         return self.blocks_dict[key]
 
-    def __iter__(self) -> Generator[PsdResourceBlockABC, None, None]:
+    def __iter__(self) -> Generator[PsdResourceBlockABC]:
         yield from self.blocks
 
     def __repr__(self) -> str:
@@ -3667,8 +3680,8 @@ def write_psdtags(
     start = fh.tell()
 
     for tag in tags:
-        if tag is None:
-            continue
+        # if tag is None:
+        #     continue
         if isinstance(tag, PsdUnknown):
             if not unknown:
                 continue
@@ -3878,7 +3891,7 @@ def product(iterable: Iterable[int]) -> int:
     return prod
 
 
-def indent(*args: Any, sep='', end='') -> str:
+def indent(*args: Any, sep: str = '', end: str = '') -> str:
     """Return joined string representations of objects with indented lines."""
     text = (sep + '\n').join(
         arg if isinstance(arg, str) else repr(arg) for arg in args
