@@ -11,7 +11,7 @@ TIFF file created by Photoshop.
 
 The format is specified in the
 `Adobe Photoshop TIFF Technical Notes (March 22, 2002)
-<https://www.awaresystems.be/imaging/tiff/specification/TIFFphotoshop.pdf>`_
+<https://download.osgeo.org/libtiff/doc/TIFFphotoshop.pdf>`_
 and
 `Adobe Photoshop File Formats Specification (November 2019)
 <https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/>`_.
@@ -20,7 +20,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD 3-Clause
-:Version: 2024.5.24
+:Version: 2025.1.1
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -46,21 +46,26 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.9.13, 3.10.11, 3.11.9, 3.12.3
-- `NumPy <https://pypi.org/project/numpy/>`_ 1.26.4
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.1.1
+- `CPython <https://www.python.org>`_ 3.10.11, 3.11.9, 3.12.8, 3.13.1 64-bit
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.1.3
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.12.30
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.5.22
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.12.12
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.8.4
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.0
   (required for plotting)
 
 Revisions
 ---------
 
+2025.1.1
+
+- Improve type hints.
+- Support Python 3.13.
+
 2024.5.24
 
-- Fix GitHub not correctly rendering docstring examples.
+- Fix docstring examples not correctly rendered on GitHub.
 
 2024.2.22
 
