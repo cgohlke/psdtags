@@ -46,8 +46,8 @@ and
 Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
-:License: BSD 3-Clause
-:Version: 2025.1.1
+:License: BSD-3-Clause
+:Version: 2025.5.10
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,17 +73,21 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.10.11, 3.11.9, 3.12.8, 3.13.1 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.1.3
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2024.12.30
+- `CPython <https://www.python.org>`_ 3.10.11, 3.11.9, 3.12.10, 3.13.3 64-bit
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.2.5
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.3.30
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2024.12.12
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.5.10
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.0
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.3
   (required for plotting)
 
 Revisions
 ---------
+
+2025.5.10
+
+- Support Python 3.14.
 
 2025.1.1
 
@@ -244,7 +248,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2025.1.1'
+__version__ = '2025.5.10'
 
 __all__ = [
     '__version__',
@@ -308,7 +312,6 @@ __all__ = [
     'overlay',
     'compress',
     'decompress',
-    'logger',
     'REPR_MAXLEN',
 ]
 
@@ -3879,8 +3882,8 @@ def overlay(
 
 
 def logger() -> logging.Logger:
-    """Return logging.getLogger('psdtags')."""
-    return logging.getLogger(__name__.replace('psdtags.psdtags', 'psdtags'))
+    """Return logger for psdtags module."""
+    return logging.getLogger('psdtags')
 
 
 def product(iterable: Iterable[int]) -> int:
