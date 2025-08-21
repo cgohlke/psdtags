@@ -16,6 +16,7 @@ from __future__ import annotations
 import imagecodecs
 import numpy
 import tifffile
+
 from psdtags import (
     PsdBlendMode,
     PsdChannel,
