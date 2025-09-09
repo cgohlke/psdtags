@@ -11,6 +11,7 @@ include examples/reflection.png
 include examples/shadow.png
 
 exclude *.cmd
+exclude *.yaml
 recursive-exclude doc *
 recursive-exclude docs *
 recursive-exclude test *
