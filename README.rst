@@ -20,7 +20,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2025.5.10
+:Version: 2025.9.15
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -46,17 +46,22 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.10.11, 3.11.9, 3.12.10, 3.13.3 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.2.5
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.3.30
+- `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.7, 3.14.0rc 64-bit
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.3.3
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.8.2
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.5.10
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.9.9
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.3
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.6
   (required for plotting)
 
 Revisions
 ---------
+
+2025.9.15
+
+- Add CAI, GENI, and OCIO keys.
+- Drop support for Python 3.10.
 
 2025.5.10
 
