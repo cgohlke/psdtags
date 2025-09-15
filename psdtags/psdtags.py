@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2025.5.10
+:Version: 2025.9.15
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,17 +73,22 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.10.11, 3.11.9, 3.12.10, 3.13.3 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.2.5
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.3.30
+- `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.7, 3.14.0rc 64-bit
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.3.3
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.8.2
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.5.10
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.9.9
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.3
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.6
   (required for plotting)
 
 Revisions
 ---------
+
+2025.9.15
+
+- Add CAI, GENI, and OCIO keys.
+- Drop support for Python 3.10.
 
 2025.5.10
 
@@ -248,7 +253,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2025.5.10'
+__version__ = '2025.9.15'
 
 __all__ = [
     '__version__',
@@ -403,7 +408,7 @@ class PsdKey(BytesEnum):
     BLEND_CLIPPING_ELEMENTS = b'clbl'
     BLEND_INTERIOR_ELEMENTS = b'infx'
     BRIGHTNESS_AND_CONTRAST = b'brit'
-    # CAI = b'CAI '
+    CAI = b'CAI '
     CHANNEL_BLENDING_RESTRICTIONS_SETTING = b'brst'
     CHANNEL_MIXER = b'mixr'
     COLOR_BALANCE = b'blnc'
@@ -419,7 +424,7 @@ class PsdKey(BytesEnum):
     FILTER_MASK = b'FMsk'
     FOREIGN_EFFECT_ID = b'ffxi'
     FRAMED_GROUP = b'frgb'
-    # GENI = b'GenI'
+    GENI = b'GenI'
     GRADIENT_FILL_SETTING = b'GdFl'
     GRADIENT_MAP = b'grdm'
     HUE_SATURATION = b'hue2'
@@ -441,6 +446,7 @@ class PsdKey(BytesEnum):
     METADATA_SETTING = b'shmd'
     NESTED_SECTION_DIVIDER_SETTING = b'lsdk'
     OBJECT_BASED_EFFECTS_LAYER_INFO = b'lfx2'
+    OCIO = b'OCIO'
     PATT = b'patt'
     PATTERNS = b'Patt'
     PATTERNS_2 = b'Pat2'
@@ -1999,11 +2005,9 @@ class PsdMetadataSettings(PsdKeyABC):
         length: int,
     ) -> PsdMetadataSettings:
         """Return metadata settings from open file."""
-        self = cls()
         count = psdformat.read(fh, 'I')
-        for _ in range(count):
-            self.items.append(PsdMetadataSetting.read(fh, psdformat))
-        return self
+        items = [PsdMetadataSetting.read(fh, psdformat) for _ in range(count)]
+        return cls(items=items)
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write metadata settings to open file."""
@@ -3537,6 +3541,7 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     # PsdKey.ARTBOARD_DATA_3: PsdUnknown,
     # PsdKey.BLACK_AND_WHITE: PsdUnknown,
     # PsdKey.BRIGHTNESS_AND_CONTRAST: PsdUnknown,
+    # PsdKey.CAI: PsdUnknown,
     # PsdKey.CHANNEL_BLENDING_RESTRICTIONS_SETTING: PsdUnknown,
     # PsdKey.CHANNEL_MIXER: PsdUnknown,
     # PsdKey.COLOR_BALANCE: PsdUnknown,
@@ -3549,6 +3554,7 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     # PsdKey.FILTER_EFFECTS: PsdUnknown,
     # PsdKey.FILTER_EFFECTS_2: PsdUnknown,
     # PsdKey.FRAMED_GROUP: PsdUnknown,
+    # PsdKey.GENI: PsdUnknown,
     # PsdKey.GRADIENT_FILL_SETTING: PsdUnknown,
     # PsdKey.GRADIENT_MAP: PsdUnknown,
     # PsdKey.HUE_SATURATION: PsdUnknown,
@@ -3559,6 +3565,7 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     # PsdKey.LINKED_LAYER_2: PsdUnknown,
     # PsdKey.LINKED_LAYER_3: PsdUnknown,
     # PsdKey.OBJECT_BASED_EFFECTS_LAYER_INFO: PsdUnknown,
+    # PsdKey.OCIO: PsdUnknown,
     # PsdKey.PATTERN_DATA: PsdUnknown,
     # PsdKey.PATTERN_FILL_SETTING: PsdUnknown,
     # PsdKey.PHOTO_FILTER: PsdUnknown,
@@ -3768,7 +3775,7 @@ def compress(
 
 
 def decompress(
-    data: bytes,
+    data: bytes | bytearray,
     compression: PsdCompressionType,
     shape: tuple[int, ...],
     dtype: DTypeLike,
