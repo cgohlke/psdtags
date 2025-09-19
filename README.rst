@@ -20,7 +20,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2025.9.15
+:Version: 2025.9.19
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -57,6 +57,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2025.9.19
+
+- Write MTrn key before layers (#17).
 
 2025.9.15
 
