@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2025.9.15
+:Version: 2025.9.19
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -84,6 +84,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2025.9.19
+
+- Write MTrn key before layers (#17).
 
 2025.9.15
 
@@ -253,7 +257,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2025.9.15'
+__version__ = '2025.9.19'
 
 __all__ = [
     '__version__',
@@ -3288,6 +3292,14 @@ class TiffImageSourceData:
             self.psdformat if psdformat is None else PsdFormat(psdformat)
         )
         written = fh.write(TiffImageSourceData.SIGNATURE)
+        # write MTrn key before layers
+        # https://github.com/cgohlke/psdtags/issues/17
+        first: list[PsdKeyABC] = []
+        info = self.info.copy()
+        if info and info[0].key in {
+            PsdKey.SAVING_MERGED_TRANSPARENCY2,
+        }:
+            first.append(info.pop(0))
         written += write_psdtags(
             fh,
             psdformat,
@@ -3295,9 +3307,10 @@ class TiffImageSourceData:
             unknown,
             maxworkers,
             4,
+            *first,
             self.layers,
             self.usermask,
-            *self.info,
+            *info,
         )
         return written
 
