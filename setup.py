@@ -47,7 +47,7 @@ readme = search(
     re.MULTILINE | re.DOTALL,
 )
 readme = '\n'.join(
-    [description, '=' * len(description)] + readme.splitlines()[1:]
+    [description, '=' * len(description), *readme.splitlines()[1:]]
 )
 
 
