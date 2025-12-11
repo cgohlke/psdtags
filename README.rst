@@ -20,7 +20,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2025.9.19
+:Version: 2025.12.12
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -46,17 +46,21 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.7, 3.14.0rc 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.3.3
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.8.2
+- `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.11, 3.14.2 64-bit
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.3.5
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.11.11
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.9.9
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.10.16
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.6
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.7
   (required for plotting)
 
 Revisions
 ---------
+
+2025.12.12
+
+- Make boolean and optional parameters keyword-only (breaking).
 
 2025.9.19
 
