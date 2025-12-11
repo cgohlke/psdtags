@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2025.9.19
+:Version: 2025.12.12
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -73,17 +73,21 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.7, 3.14.0rc 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.3.3
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.8.2
+- `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.11, 3.14.2 64-bit
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.3.5
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.11.11
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.9.9
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.10.16
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.6
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.7
   (required for plotting)
 
 Revisions
 ---------
+
+2025.12.12
+
+- Make boolean and optional parameters keyword-only (breaking).
 
 2025.9.19
 
@@ -257,10 +261,10 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2025.9.19'
+__version__ = '2025.12.12'
 
 __all__ = [
-    '__version__',
+    'REPR_MAXLEN',
     'PsdBlendMode',
     'PsdBoolean',
     'PsdBytesBlock',
@@ -313,20 +317,19 @@ __all__ = [
     'PsdWord',
     'TiffImageResources',
     'TiffImageSourceData',
-    'read_tifftag',
-    'read_psdblocks',
-    'read_psdtags',
-    'write_psdblocks',
-    'write_psdtags',
-    'overlay',
+    '__version__',
     'compress',
     'decompress',
-    'REPR_MAXLEN',
+    'overlay',
+    'read_psdblocks',
+    'read_psdtags',
+    'read_tifftag',
+    'write_psdblocks',
+    'write_psdtags',
 ]
 
 
 import abc
-import dataclasses
 import enum
 import io
 import logging
@@ -335,13 +338,14 @@ import struct
 import sys
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, NamedTuple, cast
+from typing import TYPE_CHECKING, ClassVar, NamedTuple, cast
 
 import numpy
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterable
+    from collections.abc import Generator, Iterable, Sequence
     from typing import Any, BinaryIO, Literal
 
     from numpy.typing import DTypeLike, NDArray
@@ -365,22 +369,22 @@ class BytesEnumMeta(enum.EnumMeta):
         try:
             # big endian
             c = enum.EnumMeta.__call__(cls, *args, **kwds)
-        except ValueError as exc:
+        except ValueError:
             try:
                 # little endian
                 if args:
-                    args = (args[0][::-1],) + args[1:]
+                    args = (args[0][::-1], *args[1:])
                 c = enum.EnumMeta.__call__(cls, *args, **kwds)
             except Exception:
                 if args and len(args[0]) == 4 and args[0].strip().isalnum():
                     logger().warning(
                         f'psdtags.{cls.__name__}({args[0]!r}) not defined'
                     )
-                    newargs = (b'?unk',) + args[1:]
+                    newargs = (b'?unk', *args[1:])
                     c = enum.EnumMeta.__call__(cls, *newargs, **kwds)
                     c._value_ = args[0]
                 else:
-                    raise exc
+                    raise
         return c
 
 
@@ -752,6 +756,7 @@ class PsdThumbnailFormat(enum.IntEnum):
 class PsdLayerFlag(enum.IntFlag):
     """Layer record flags."""
 
+    BASE = 0
     TRANSPARENCY_PROTECTED = 1
     VISIBLE = 2
     OBSOLETE = 4
@@ -764,6 +769,7 @@ class PsdLayerFlag(enum.IntFlag):
 class PsdLayerMaskFlag(enum.IntFlag):
     """Layer mask flags."""
 
+    BASE = 0
     RELATIVE = 1  # position relative to layer
     DISABLED = 2  # layer mask disabled
     INVERT = 4  # invert layer mask when blending (obsolete)
@@ -776,6 +782,7 @@ class PsdLayerMaskFlag(enum.IntFlag):
 class PsdLayerMaskParameterFlag(enum.IntFlag):
     """Layer mask parameters."""
 
+    BASE = 0
     USER_DENSITY = 1  # user mask density, 1 byte
     USER_FEATHER = 2  # user mask feather, 8 byte, double
     VECTOR_DENSITY = 4  # vector mask density, 1 byte
@@ -861,7 +868,7 @@ class PsdRectangle(NamedTuple):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdPascalString:
     """Pascal string."""
 
@@ -897,7 +904,7 @@ class PsdPascalString:
         return f'{self.__class__.__name__}({self.value!r})'
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdUnicodeString:
     """Unicode string."""
 
@@ -917,7 +924,7 @@ class PsdUnicodeString:
         return cls(value=value)
 
     def write(
-        self, fh: BinaryIO, psdformat: PsdFormat, /, terminate: bool = True
+        self, fh: BinaryIO, psdformat: PsdFormat, /, *, terminate: bool = True
     ) -> int:
         """Write unicode string to open file."""
         value = self.value + '\0' if terminate else self.value
@@ -1049,8 +1056,7 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
     ) -> PsdKeyABC:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.read(fh, psdformat, key, length=len(data))
-        return self
+            return cls.read(fh, psdformat, key, length=len(data))
 
     @abc.abstractmethod
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
@@ -1060,22 +1066,21 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
         """Return instance values as bytes."""
         with io.BytesIO() as fh:
             self.write(fh, psdformat)
-            data = fh.getvalue()
-        return data
+            return fh.getvalue()
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}{enumstr(self.key)})>'
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdLayers(PsdKeyABC):
     """Sequence of PsdLayer."""
 
     key: PsdKey
-    layers: list[PsdLayer] = dataclasses.field(default_factory=list)
+    layers: list[PsdLayer] = field(default_factory=list)
     has_transparency: bool = False
 
-    TYPES = {
+    TYPES: ClassVar[dict[PsdKey, str]] = {
         PsdKey.LAYER: 'B',  # uint8
         PsdKey.LAYER_16: 'H',  # uint16
         PsdKey.LAYER_32: 'f',  # float32
@@ -1089,17 +1094,19 @@ class PsdLayers(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
+        *,
         unknown: bool = True,
     ) -> PsdLayers:
         """Return instance from open file."""
+        del length  # unused
         count = psdformat.read(fh, 'h')
         has_transparency = count < 0
         count = abs(count)
 
         # layer records
-        layers: list[PsdLayer] = []
-        for _ in range(count):
-            layers.append(PsdLayer.read(fh, psdformat, unknown=unknown))
+        layers = [
+            PsdLayer.read(fh, psdformat, unknown=unknown) for _ in range(count)
+        ]
 
         # channel image data
         dtype = PsdLayers.TYPES[key]
@@ -1125,20 +1132,21 @@ class PsdLayers(PsdKeyABC):
         psdformat: PsdFormat,
         key: PsdKey,
         /,
+        *,
         unknown: bool = True,
     ) -> PsdLayers:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.read(
+            return cls.read(
                 fh, psdformat, key, length=len(data), unknown=unknown
             )
-        return self
 
     def write(
         self,
         fh: BinaryIO,
         psdformat: PsdFormat,
         /,
+        *,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
         maxworkers: int = 1,
@@ -1174,6 +1182,7 @@ class PsdLayers(PsdKeyABC):
         self,
         psdformat: PsdFormat,
         /,
+        *,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
         maxworkers: int = 1,
@@ -1187,8 +1196,7 @@ class PsdLayers(PsdKeyABC):
                 unknown=unknown,
                 maxworkers=maxworkers,
             )
-            data = fh.getvalue()
-        return data
+            return fh.getvalue()
 
     @property
     def dtype(self) -> numpy.dtype[Any]:
@@ -1200,15 +1208,11 @@ class PsdLayers(PsdKeyABC):
         """Height and width of layer images."""
         shape = [0, 0]
         for layer in self.layers:
-            if layer.rectangle[2] > shape[0]:
-                shape[0] = layer.rectangle[2]
-            if layer.rectangle[3] > shape[1]:
-                shape[1] = layer.rectangle[3]
+            shape[0] = max(shape[0], layer.rectangle[2])
+            shape[1] = max(shape[1], layer.rectangle[3])
             if layer.mask is not None and layer.mask.rectangle is not None:
-                if layer.mask.rectangle[2] > shape[0]:
-                    shape[0] = layer.mask.rectangle[2]
-                if layer.mask.rectangle[3] > shape[1]:
-                    shape[1] = layer.mask.rectangle[3]
+                shape[0] = max(shape[0], layer.mask.rectangle[2])
+                shape[1] = max(shape[1], layer.mask.rectangle[3])
         return shape[0], shape[1]
 
     def __bool__(self) -> bool:
@@ -1238,7 +1242,7 @@ class PsdLayers(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdLayer:
     """PSD layer record."""
 
@@ -1249,13 +1253,13 @@ class PsdLayer:
     opacity: int = 255
     blendmode: PsdBlendMode = PsdBlendMode.NORMAL
     blending_ranges: tuple[int, ...] = ()
-    clipping: PsdClippingType = PsdClippingType(0)
-    flags: PsdLayerFlag = PsdLayerFlag(0)
-    info: list[Any] = dataclasses.field(default_factory=list)
+    clipping: PsdClippingType = PsdClippingType.BASE
+    flags: PsdLayerFlag = PsdLayerFlag.BASE
+    info: list[Any] = field(default_factory=list)
 
     @classmethod
     def read(
-        cls, fh: BinaryIO, psdformat: PsdFormat, /, unknown: bool = True
+        cls, fh: BinaryIO, psdformat: PsdFormat, /, *, unknown: bool = True
     ) -> PsdLayer:
         """Return instance from open file.
 
@@ -1264,9 +1268,7 @@ class PsdLayer:
         """
         rectangle = PsdRectangle(*psdformat.read(fh, 'iiii'))
         count = psdformat.read(fh, 'H')
-        channels = []
-        for _ in range(count):
-            channels.append(PsdChannel.read(fh, psdformat))
+        channels = [PsdChannel.read(fh, psdformat) for _ in range(count)]
 
         signature = fh.read(4)
         assert signature in (b'8BIM', b'MIB8')
@@ -1296,7 +1298,7 @@ class PsdLayer:
         name = str(PsdPascalString.read(fh, pad=4))
 
         info = read_psdtags(
-            fh, psdformat, length=end - fh.tell(), unknown=unknown, align=2
+            fh, psdformat, end - fh.tell(), unknown=unknown, align=2
         )
 
         fh.seek(end)
@@ -1318,14 +1320,14 @@ class PsdLayer:
     def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> PsdLayer:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.read(fh, psdformat)
-        return self
+            return cls.read(fh, psdformat)
 
     def write(
         self,
         fh: BinaryIO,
         psdformat: PsdFormat,
         /,
+        *,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
         maxworkers: int = 1,
@@ -1380,7 +1382,9 @@ class PsdLayer:
 
         PsdPascalString(self.name).write(fh, pad=4)
 
-        write_psdtags(fh, psdformat, compression, unknown, 1, 2, *self.info)
+        write_psdtags(
+            fh, psdformat, compression, 1, 2, unknown=unknown, tags=self.info
+        )
 
         extra_size = fh.tell() - pos
         fh.seek(extra_size_pos)
@@ -1393,6 +1397,7 @@ class PsdLayer:
         self,
         psdformat: PsdFormat,
         /,
+        *,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
         maxworkers: int = 1,
@@ -1410,7 +1415,7 @@ class PsdLayer:
         return layer_record, channel_image_data
 
     def asarray(
-        self, channelid: PsdChannelId | None = None, planar: bool = False
+        self, *, channelid: PsdChannelId | None = None, planar: bool = False
     ) -> NDArray[Any]:
         """Return channel image data."""
         if channelid is not None:
@@ -1459,6 +1464,22 @@ class PsdLayer:
         """Layer has unknown structures in info."""
         return any(isinstance(tag, PsdUnknown) for tag in self.info)
 
+    def __hash__(self) -> int:
+        return hash(
+            (
+                # self.name,
+                self.rectangle,
+                self.opacity,
+                self.blendmode,
+                self.blending_ranges,
+                self.clipping,
+                self.flags,
+                self.mask,
+                tuple(self.info),
+                tuple(self.channels),
+            )
+        )
+
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, self.__class__)
@@ -1493,7 +1514,7 @@ class PsdLayer:
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdChannel:
     """ChannelInfo and ChannelImageData."""
 
@@ -1518,8 +1539,7 @@ class PsdChannel:
     def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> PsdChannel:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.read(fh, psdformat)
-        return self
+            return cls.read(fh, psdformat)
 
     def read_image(
         self,
@@ -1584,13 +1604,20 @@ class PsdChannel:
         fh.write(channel_info)
         return channel_image_data
 
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.channelid,
+                # self.compression,
+                self.data.tobytes() if self.data is not None else None,
+            )
+        )
+
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, self.__class__)
             and self.channelid == other.channelid
-            and numpy.array_equal(
-                self.data, other.data  # type: ignore[arg-type]
-            )
+            and numpy.array_equal(self.data, other.data)
             # and self.compression == other.compression
         )
 
@@ -1611,13 +1638,13 @@ class PsdChannel:
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdLayerMask:
     """Layer mask / adjustment layer data."""
 
     default_color: int = 0
     rectangle: PsdRectangle | None = None
-    flags: PsdLayerMaskFlag = PsdLayerMaskFlag(0)
+    flags: PsdLayerMaskFlag = PsdLayerMaskFlag.BASE
     user_mask_density: int | None = None
     user_mask_feather: float | None = None
     vector_mask_density: int | None = None
@@ -1679,8 +1706,7 @@ class PsdLayerMask:
     def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> PsdLayerMask:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.read(fh, psdformat)
-        return self
+            return cls.read(fh, psdformat)
 
     def tobytes(self, psdformat: PsdFormat, /) -> bytes:
         """Return layer mask structure."""
@@ -1779,11 +1805,11 @@ class PsdLayerMask:
         return indent(*info, end='\n)')
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdUserMask(PsdKeyABC):
     """User mask. Same as global layer mask info table."""
 
-    colorspace: PsdColorSpaceType = PsdColorSpaceType(-1)
+    colorspace: PsdColorSpaceType = PsdColorSpaceType.UNKNOWN
     components: tuple[int, int, int, int] = (0, 0, 0, 0)
     opacity: int = 0
     flag: int = 128
@@ -1800,6 +1826,7 @@ class PsdUserMask(PsdKeyABC):
         length: int,
     ) -> PsdUserMask:
         """Return instance from open file."""
+        del key, length  # unused
         colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
         fmt = '4h' if colorspace == PsdColorSpaceType.Lab else '4H'
         components = psdformat.read(fh, fmt)
@@ -1835,7 +1862,7 @@ class PsdUserMask(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdFilterMask(PsdKeyABC):
     """Filter Mask (Photoshop CS3)."""
 
@@ -1855,6 +1882,7 @@ class PsdFilterMask(PsdKeyABC):
         length: int,
     ) -> PsdFilterMask:
         """Return instance from open file."""
+        del key, length  # unused
         colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
         fmt = '4h' if colorspace == PsdColorSpaceType.Lab else '4H'
         components = psdformat.read(fh, fmt)
@@ -1887,7 +1915,7 @@ class PsdFilterMask(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdPatterns(PsdKeyABC):
     """Patterns (Photoshop 6.0 and CS 8.0)."""
 
@@ -1897,7 +1925,7 @@ class PsdPatterns(PsdKeyABC):
     guid: str
     data: PsdVirtualMemoryArrayList
     colortable: NDArray[numpy.uint8] | None = None
-    point: PsdPoint = PsdPoint(0, 0)
+    point: PsdPoint = field(default_factory=lambda: PsdPoint(0, 0))
 
     @classmethod
     def read(
@@ -1909,7 +1937,8 @@ class PsdPatterns(PsdKeyABC):
         length: int,
     ) -> PsdPatterns:
         """Return instance from open file."""
-        length, version = psdformat.read(fh, 'II')
+        del length  # unused
+        _length, version = psdformat.read(fh, 'II')
         assert version == 1
         imagemode = PsdImageMode(psdformat.read(fh, 'I'))
         point = PsdPoint(*psdformat.read(fh, 'hh'))
@@ -1954,7 +1983,7 @@ class PsdPatterns(PsdKeyABC):
         fh.seek(length, 1)
         return length + 4
 
-    def asarray(self, planar: bool = False) -> NDArray[Any]:
+    def asarray(self, *, planar: bool = False) -> NDArray[Any]:
         """Return channel image data."""
         datalist: list[NDArray[Any]] = [
             channel.data
@@ -1991,11 +2020,11 @@ class PsdPatterns(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdMetadataSettings(PsdKeyABC):
     """Metadata setting (Photoshop 6.0)."""
 
-    items: list[PsdMetadataSetting] = dataclasses.field(default_factory=list)
+    items: list[PsdMetadataSetting] = field(default_factory=list)
 
     key = PsdKey.METADATA_SETTING
 
@@ -2009,6 +2038,7 @@ class PsdMetadataSettings(PsdKeyABC):
         length: int,
     ) -> PsdMetadataSettings:
         """Return metadata settings from open file."""
+        del key, length  # unused
         count = psdformat.read(fh, 'I')
         items = [PsdMetadataSetting.read(fh, psdformat) for _ in range(count)]
         return cls(items=items)
@@ -2031,7 +2061,7 @@ class PsdMetadataSettings(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdMetadataSetting:
     """Metadata setting item."""
 
@@ -2041,11 +2071,7 @@ class PsdMetadataSetting:
     copyonsheet: bool = False
 
     @classmethod
-    def read(
-        cls,
-        fh: BinaryIO,
-        psdformat: PsdFormat,
-    ) -> PsdMetadataSetting:
+    def read(cls, fh: BinaryIO, psdformat: PsdFormat) -> PsdMetadataSetting:
         """Return metadata setting from open file."""
         signature = PsdFormat(fh.read(4))
         # assert signature in (b'8BIM', b'MIB8')
@@ -2069,6 +2095,16 @@ class PsdMetadataSetting:
         psdformat.write(fh, '?xxxI', self.copyonsheet, len(self.data))
         fh.write(self.data)
         return 16 + len(self.data)
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                # self.signature,
+                self.key,
+                self.copyonsheet,
+                self.data,
+            )
+        )
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -2094,14 +2130,12 @@ class PsdMetadataSetting:
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdVirtualMemoryArrayList:
     """Virtual memory array list."""
 
     rectangle: PsdRectangle
-    channels: list[PsdVirtualMemoryArray] = dataclasses.field(
-        default_factory=list
-    )
+    channels: list[PsdVirtualMemoryArray] = field(default_factory=list)
 
     @classmethod
     def read(
@@ -2110,14 +2144,14 @@ class PsdVirtualMemoryArrayList:
         """Return instance from open file."""
         version = psdformat.read(fh, 'I')
         assert version == 3
-        length = psdformat.read(fh, 'I')  # noqa
+        psdformat.read(fh, 'I')
         rectangle = PsdRectangle(*psdformat.read(fh, '4I'))
         channelcount = psdformat.read(fh, 'I')
 
-        channels = []
-        for _ in range(channelcount + 2):
-            channels.append(PsdVirtualMemoryArray.read(fh, psdformat))
-
+        channels = [
+            PsdVirtualMemoryArray.read(fh, psdformat)
+            for _ in range(channelcount + 2)
+        ]
         return cls(rectangle=rectangle, channels=channels)
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
@@ -2158,7 +2192,7 @@ class PsdVirtualMemoryArrayList:
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdVirtualMemoryArray:
     """Virtual memory array."""
 
@@ -2264,6 +2298,18 @@ class PsdVirtualMemoryArray:
     def __bool__(self) -> bool:
         return self.iswritten and bool(self.rectangle)
 
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.iswritten,
+                self.depth,
+                self.pixeldepth,
+                self.rectangle,
+                # self.compression,
+                self.data.tobytes() if self.data is not None else None,
+            )
+        )
+
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, self.__class__)
@@ -2271,9 +2317,7 @@ class PsdVirtualMemoryArray:
             and self.depth == other.depth
             and self.pixeldepth == other.pixeldepth
             and self.rectangle == other.rectangle
-            and numpy.array_equal(
-                self.data, other.data  # type: ignore[arg-type]
-            )
+            and numpy.array_equal(self.data, other.data)
             # and self.compression == other.compression
         )
 
@@ -2292,7 +2336,7 @@ class PsdVirtualMemoryArray:
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdSectionDividerSetting(PsdKeyABC):
     """Section divider setting (Photoshop 6.0)."""
 
@@ -2312,6 +2356,7 @@ class PsdSectionDividerSetting(PsdKeyABC):
         length: int,
     ) -> PsdSectionDividerSetting:
         """Return instance from open file."""
+        del key  # unused
         kind = PsdSectionDividerType(psdformat.read(fh, 'I'))
         if length < 12:
             return cls(kind=kind)
@@ -2345,7 +2390,7 @@ class PsdSectionDividerSetting(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdSheetColorSetting(PsdKeyABC):
     """Sheet color setting (Photoshop 6.0)."""
 
@@ -2362,6 +2407,7 @@ class PsdSheetColorSetting(PsdKeyABC):
         length: int,
     ) -> PsdSheetColorSetting:
         """Return instance from open file."""
+        del key, length  # unused
         color = PsdColorType(psdformat.read(fh, 'H6x'))
         return cls(color=color)
 
@@ -2374,7 +2420,7 @@ class PsdSheetColorSetting(PsdKeyABC):
         return f'{self.__class__.__name__}({enumstr(self.color)})'
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdReferencePoint(PsdKeyABC):
     """Reference point."""
 
@@ -2392,6 +2438,7 @@ class PsdReferencePoint(PsdKeyABC):
         length: int,
     ) -> PsdReferencePoint:
         """Return instance from open file."""
+        del key, length  # unused
         return cls(*psdformat.read(fh, 'dd'))
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
@@ -2402,7 +2449,7 @@ class PsdReferencePoint(PsdKeyABC):
         return f'{self.__class__.__name__}({self.x}, {self.y})'
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdExposure(PsdKeyABC):
     """Exposure."""
 
@@ -2422,6 +2469,7 @@ class PsdExposure(PsdKeyABC):
         length: int,
     ) -> PsdExposure:
         """Return exposure from open file."""
+        del key, length  # unused
         version, exposure, offset, gamma = psdformat.read(fh, 'Hfff')
         assert version == 1
         return cls(exposure=exposure, offset=offset, gamma=gamma)
@@ -2442,7 +2490,7 @@ class PsdExposure(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdTextEngineData(PsdKeyABC):
     """Text Engine Data (Photoshop CS3)."""
 
@@ -2459,6 +2507,7 @@ class PsdTextEngineData(PsdKeyABC):
         length: int,
     ) -> PsdTextEngineData:
         """Return instance from open file."""
+        del key  # unused
         length = psdformat.read(fh, 'I')
         return cls(data=fh.read(length))
 
@@ -2478,7 +2527,7 @@ class PsdTextEngineData(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdString(PsdKeyABC):
     """Unicode string."""
 
@@ -2495,6 +2544,7 @@ class PsdString(PsdKeyABC):
         length: int,
     ) -> PsdString:
         """Return instance from open file."""
+        del length  # unused
         value = str(PsdUnicodeString.read(fh, psdformat))
         return cls(key=key, value=value)
 
@@ -2513,7 +2563,7 @@ class PsdString(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdBoolean(PsdKeyABC):
     """Boolean."""
 
@@ -2530,12 +2580,14 @@ class PsdBoolean(PsdKeyABC):
         length: int,
     ) -> PsdBoolean:
         """Return instance from open file."""
+        del psdformat, length  # unused
         value = bool(fh.read(1)[0])
         fh.read(3)
         return cls(key=key, value=value)
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write boolean to open file."""
+        del psdformat
         return fh.write(b'\1\0\0\0' if self.value else b'\0\0\0\0')
 
     def __bool__(self) -> bool:
@@ -2545,7 +2597,7 @@ class PsdBoolean(PsdKeyABC):
         return f'{self.__class__.__name__}({enumstr(self.key)}, {self.value})'
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdInteger(PsdKeyABC):
     """4 Byte Integer."""
 
@@ -2562,6 +2614,7 @@ class PsdInteger(PsdKeyABC):
         length: int,
     ) -> PsdInteger:
         """Return instance from open file."""
+        del length  # unused
         value = psdformat.read(fh, 'i')
         return cls(key=key, value=value)
 
@@ -2573,7 +2626,7 @@ class PsdInteger(PsdKeyABC):
         return f'{self.__class__.__name__}({enumstr(self.key)}, {self.value})'
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdWord(PsdKeyABC):
     """Four bytes."""
 
@@ -2590,10 +2643,12 @@ class PsdWord(PsdKeyABC):
         length: int,
     ) -> PsdWord:
         """Return instance from open file."""
+        del psdformat, length  # unused
         return cls(key=key, value=fh.read(4))
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write four bytes value to open file."""
+        del psdformat  # unused
         return fh.write(self.value)
 
     def __repr__(self) -> str:
@@ -2602,7 +2657,7 @@ class PsdWord(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdUnknown(PsdKeyABC):
     """Unknown keys stored as opaque bytes."""
 
@@ -2641,6 +2696,15 @@ class PsdUnknown(PsdKeyABC):
             raise ValueError(f'can not write opaque bytes as{psdformat}')
         return self.value
 
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.key,
+                self.value,
+                self.psdformat if len(self.value) > 0 else 1,
+            )
+        )
+
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, self.__class__)
@@ -2663,7 +2727,7 @@ class PsdUnknown(PsdKeyABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdEmpty(PsdKeyABC):
     """Empty structure, no data associated with key."""
 
@@ -2679,6 +2743,7 @@ class PsdEmpty(PsdKeyABC):
         length: int,
     ) -> PsdEmpty:
         """Return instance from open file."""
+        del fh, psdformat  # unused
         assert length == 0
         return cls(key=key)
 
@@ -2687,15 +2752,18 @@ class PsdEmpty(PsdKeyABC):
         cls, data: bytes, psdformat: PsdFormat, key: PsdKey, /
     ) -> PsdEmpty:
         """Return instance from bytes."""
+        del psdformat  # unused
         assert len(data) == 0
         return cls(key=key)
 
     def tobytes(self, psdformat: PsdFormat, /) -> bytes:
         """Return empty byte string."""
+        del psdformat  # unused
         return b''
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write nothing to open file."""
+        del fh, psdformat  # unused
         return 0
 
     def __repr__(self) -> str:
@@ -2732,10 +2800,9 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
     ) -> PsdResourceBlockABC:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.read(
+            return cls.read(
                 fh, psdformat, resourceid, name=name, length=len(data)
             )
-        return self
 
     @abc.abstractmethod
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
@@ -2745,8 +2812,7 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
         """Return instance values as bytes."""
         with io.BytesIO() as fh:
             self.write(fh, psdformat)
-            data = fh.getvalue()
-        return data
+            return fh.getvalue()
 
     def __repr__(self) -> str:
         return (
@@ -2755,7 +2821,7 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdBytesBlock(PsdResourceBlockABC):
     """Image resource blocks stored as opaque bytes."""
 
@@ -2774,11 +2840,13 @@ class PsdBytesBlock(PsdResourceBlockABC):
         length: int,
     ) -> PsdBytesBlock:
         """Return instance from open file."""
+        del psdformat  # unused
         value = fh.read(length)
         return cls(resourceid=resourceid, name=name, value=value)
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write instance values to open file."""
+        del psdformat  # unused
         return fh.write(self.value)
 
     def __repr__(self) -> str:
@@ -2795,7 +2863,7 @@ class PsdBytesBlock(PsdResourceBlockABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdVersionBlock(PsdResourceBlockABC):
     """Image resource blocks stored as opaque bytes."""
 
@@ -2818,6 +2886,7 @@ class PsdVersionBlock(PsdResourceBlockABC):
         length: int,
     ) -> PsdVersionBlock:
         """Return instance from open file."""
+        del length  # unused
         version = psdformat.read(fh, 'I')
         has_real_merged_data = bool(fh.read(1)[0])
         writer_name = str(PsdUnicodeString.read(fh, psdformat))
@@ -2857,7 +2926,7 @@ class PsdVersionBlock(PsdResourceBlockABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdStringBlock(PsdResourceBlockABC):
     """Unicode string."""
 
@@ -2876,6 +2945,7 @@ class PsdStringBlock(PsdResourceBlockABC):
         length: int,
     ) -> PsdStringBlock:
         """Return instance from open file."""
+        del length  # unused
         value = str(PsdUnicodeString.read(fh, psdformat))
         return cls(resourceid=resourceid, name=name, value=value)
 
@@ -2893,7 +2963,7 @@ class PsdStringBlock(PsdResourceBlockABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdStringsBlock(PsdResourceBlockABC):
     """Series of Unicode strings."""
 
@@ -2937,7 +3007,7 @@ class PsdStringsBlock(PsdResourceBlockABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdPascalStringBlock(PsdResourceBlockABC):
     """Pascal string."""
 
@@ -2956,11 +3026,13 @@ class PsdPascalStringBlock(PsdResourceBlockABC):
         length: int,
     ) -> PsdPascalStringBlock:
         """Return instance from open file."""
+        del psdformat, length  # unused
         value = str(PsdPascalString.read(fh, pad=2))
         return cls(resourceid=resourceid, name=name, value=value)
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write Pascal string to open file."""
+        del psdformat  # unused
         return PsdPascalString(self.value).write(fh, pad=2)
 
     def __repr__(self) -> str:
@@ -2973,7 +3045,7 @@ class PsdPascalStringBlock(PsdResourceBlockABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdPascalStringsBlock(PsdResourceBlockABC):
     """Series of Pascal strings."""
 
@@ -2992,6 +3064,7 @@ class PsdPascalStringsBlock(PsdResourceBlockABC):
         length: int,
     ) -> PsdPascalStringsBlock:
         """Return instance from open file."""
+        del psdformat  # unused
         values = []
         pos = fh.tell()
         while fh.tell() - pos < length:
@@ -3000,6 +3073,7 @@ class PsdPascalStringsBlock(PsdResourceBlockABC):
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write sequence of Pascal strings to open file."""
+        del psdformat  # unused
         written = 0
         for value in self.values:
             written += PsdPascalString(value).write(fh, pad=1)
@@ -3017,7 +3091,7 @@ class PsdPascalStringsBlock(PsdResourceBlockABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdColorBlock(PsdResourceBlockABC):
     """Color structure."""
 
@@ -3037,6 +3111,7 @@ class PsdColorBlock(PsdResourceBlockABC):
         length: int,
     ) -> PsdColorBlock:
         """Return instance from open file."""
+        del length  # unused
         colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
         fmt = '4h' if colorspace == PsdColorSpaceType.Lab else '4H'
         components = psdformat.read(fh, fmt)
@@ -3063,7 +3138,7 @@ class PsdColorBlock(PsdResourceBlockABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class PsdThumbnailBlock(PsdResourceBlockABC):
     """Thumbnail resource format."""
 
@@ -3173,21 +3248,21 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class TiffImageSourceData:
     """TIFF ImageSourceData tag #37724."""
 
     psdformat: PsdFormat
     layers: PsdLayers
     usermask: PsdUserMask
-    info: list[PsdKeyABC] = dataclasses.field(default_factory=list)
+    info: list[PsdKeyABC] = field(default_factory=list)
     name: str | None = None
 
     SIGNATURE = b'Adobe Photoshop Document Data Block\0'
 
     @classmethod
     def read(
-        cls, fh: BinaryIO, /, name: str | None = None, unknown: bool = True
+        cls, fh: BinaryIO, /, name: str | None = None, *, unknown: bool = True
     ) -> TiffImageSourceData:
         """Return instance from open file."""
         name = type(fh).__name__ if name is None else name
@@ -3255,18 +3330,18 @@ class TiffImageSourceData:
 
     @classmethod
     def frombytes(
-        cls, data: bytes, /, name: str | None = None, unknown: bool = True
+        cls, data: bytes, /, *, name: str | None = None, unknown: bool = True
     ) -> TiffImageSourceData:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
-            self = cls.read(fh, name=name, unknown=unknown)
-        return self
+            return cls.read(fh, name=name, unknown=unknown)
 
     @classmethod
     def fromtiff(
         cls,
         filename: os.PathLike[Any] | str,
         /,
+        *,
         pageindex: int = 0,
         unknown: bool = True,
     ) -> TiffImageSourceData:
@@ -3283,6 +3358,7 @@ class TiffImageSourceData:
         fh: BinaryIO,
         /,
         psdformat: PsdFormat | bytes | None = None,
+        *,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
         maxworkers: int = 1,
@@ -3304,19 +3380,17 @@ class TiffImageSourceData:
             fh,
             psdformat,
             compression,
-            unknown,
             maxworkers,
             4,
-            *first,
-            self.layers,
-            self.usermask,
-            *info,
+            unknown=unknown,
+            tags=(*first, self.layers, self.usermask, *info),
         )
         return written
 
     def tobytes(
         self,
         psdformat: PsdFormat | bytes | None = None,
+        *,
         compression: PsdCompressionType | None = None,
         unknown: bool = True,
         maxworkers: int = 1,
@@ -3330,13 +3404,13 @@ class TiffImageSourceData:
                 unknown=unknown,
                 maxworkers=maxworkers,
             )
-            value = fh.getvalue()
-        return value
+            return fh.getvalue()
 
     def tifftag(
         self,
         psdformat: PsdFormat | bytes | None = None,
         compression: PsdCompressionType | None = None,
+        *,
         unknown: bool = True,
         maxworkers: int = 1,
     ) -> tuple[int, int, int, bytes, bool]:
@@ -3359,6 +3433,9 @@ class TiffImageSourceData:
         return any(isinstance(tag, PsdUnknown) for tag in self.info) or any(
             layer.has_unknowns for layer in self.layers
         )
+
+    def __hash__(self) -> int:
+        return hash((tuple(self.layers), tuple(self.info)))
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -3385,7 +3462,7 @@ class TiffImageSourceData:
         )
 
 
-@dataclasses.dataclass(repr=False)
+@dataclass(repr=False)
 class TiffImageResources:
     """TIFF ImageResources tag #34377."""
 
@@ -3413,8 +3490,7 @@ class TiffImageResources:
     ) -> TiffImageResources:
         """Return instance from ImageResources tag value."""
         with io.BytesIO(data) as fh:
-            self = cls.read(fh, length=len(data), name=name)
-        return self
+            return cls.read(fh, length=len(data), name=name)
 
     @classmethod
     def fromtiff(
@@ -3434,8 +3510,7 @@ class TiffImageResources:
         """Return ImageResources tag value as bytes."""
         with io.BytesIO() as fh:
             self.write(fh)
-            value = fh.getvalue()
-        return value
+            return fh.getvalue()
 
     def tifftag(self) -> tuple[int, int, int, bytes, bool]:
         """Return tifffile.TiffWriter.write extratags item."""
@@ -3445,9 +3520,9 @@ class TiffImageResources:
     def thumbnail(self) -> NDArray[Any] | None:
         """Return thumbnail image if any, else None."""
         if 1036 in self.blocks_dict:
-            return cast(PsdThumbnailBlock, self.blocks_dict[1036]).data
+            return cast('PsdThumbnailBlock', self.blocks_dict[1036]).data
         if 1033 in self.blocks_dict:
-            return cast(PsdThumbnailBlock, self.blocks_dict[1033]).data
+            return cast('PsdThumbnailBlock', self.blocks_dict[1033]).data
         return None
 
     @cached_property
@@ -3459,6 +3534,9 @@ class TiffImageResources:
             if block.resourceid.value not in blocks_dict:
                 blocks_dict[block.resourceid.value] = block
         return blocks_dict
+
+    def __hash__(self) -> int:
+        return hash(self.tobytes())
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -3666,6 +3744,7 @@ def read_psdtags(
     psdformat: PsdFormat,
     /,
     length: int,
+    *,
     unknown: bool = True,
     align: int = 2,
 ) -> list[PsdKeyABC]:
@@ -3694,10 +3773,11 @@ def write_psdtags(
     psdformat: PsdFormat,
     /,
     compression: PsdCompressionType | None,
-    unknown: bool,
     maxworkers: int,
     align: int,
-    *tags: PsdKeyABC,
+    *,
+    unknown: bool = True,
+    tags: Sequence[PsdKeyABC],
 ) -> int:
     """Write sequence of tags to open file."""
     start = fh.tell()
@@ -3744,10 +3824,9 @@ def read_tifftag(
     from tifffile import TiffFile
 
     with TiffFile(filename) as tif:
-        data = tif.pages[pageindex].aspage().tags.valueof(tag)
-        # if data is None:
-        #     raise ValueError(f'TIFF file contains no tag {tag!r}')
-    return data
+        return tif.pages[pageindex].aspage().tags.valueof(tag)
+    # if data is None:
+    #     raise ValueError(f'TIFF file contains no tag {tag!r}')
 
 
 def compress(
@@ -3858,10 +3937,7 @@ def overlay(
     """
     dtype = layers[0][0].dtype
     if vmax is None:
-        if dtype.kind == 'f':
-            vmax = 1.0
-        else:
-            vmax = numpy.iinfo(dtype).max
+        vmax = 1.0 if dtype.kind == 'f' else numpy.iinfo(dtype).max
     if shape is None:
         shape = layers[0][0].shape
 
@@ -3906,11 +3982,15 @@ def logger() -> logging.Logger:
     return logging.getLogger('psdtags')
 
 
-def product(iterable: Iterable[int]) -> int:
-    """Return product of sequence of numbers."""
+def product(iterable: Iterable[int], /) -> int:
+    """Return product of integers.
+
+    Like math.prod, but does not overflow with numpy arrays.
+
+    """
     prod = 1
     for i in iterable:
-        prod *= i
+        prod *= int(i)
     return prod
 
 
@@ -3947,36 +4027,34 @@ def enumstr(v: enum.Enum | None, /) -> str:
     return s
 
 
-def test(verbose: bool = False) -> None:
+def test(*, verbose: bool = False) -> None:
     """Test TiffImageSourceData and TiffImageResources classes."""
     from glob import glob
 
     import imagecodecs
     import tifffile
 
-    print(f'Python {sys.version}')
-    print(
+    print(f'Python {sys.version}')  # noqa: T201
+    print(  # noqa: T201
         f'psdtags-{__version__},',
         f'numpy-{numpy.__version__},',
         f'tifffile-{tifffile.__version__},',
         f'imagecodecs-{imagecodecs.__version__}',
     )
 
-    for filename in glob('tests/*.tif'):
+    for filename in glob('tests/data/*.tif'):
         if read_tifftag(filename, 34377) is not None:
             res1 = TiffImageResources.fromtiff(filename)
             assert str(res1)
             if verbose:
-                print(res1)
-                print()
+                print(res1, '\n')  # noqa: T201
             res2 = TiffImageResources.frombytes(res1.tobytes())
             assert res1 == res2, (filename, res1, res2)
 
         isd1 = TiffImageSourceData.fromtiff(filename)
         assert str(isd1)
         if verbose:
-            print(isd1)
-            print()
+            print(isd1, '\n')  # noqa: T201
 
         has_unknown = any(
             isinstance(tag, PsdUnknown) for tag in isd1.info
@@ -3994,7 +4072,7 @@ def test(verbose: bool = False) -> None:
             for compression in PsdCompressionType:
                 if compression == PsdCompressionType.UNKNOWN:
                     continue
-                print('.', end='', flush=True)
+                print('.', end='', flush=True)  # noqa: T201
                 buffer = isd1.tobytes(
                     psdformat=psdformat,
                     compression=compression,
@@ -4020,9 +4098,9 @@ def test(verbose: bool = False) -> None:
         assert size == len(tagvalue)
         assert writeonce
         assert isd1 == TiffImageSourceData.frombytes(tagvalue)
-        print('.', end=' ', flush=True)
+        print('.', end=' ', flush=True)  # noqa: T201
 
-    print()
+    print()  # noqa: T201
     # TODO: test TiffImageResources
 
 
@@ -4045,21 +4123,9 @@ def main(argv: list[str] | None = None) -> int:
     if len(argv) > 1 and '--test' in argv:
         if os.path.exists('../tests'):
             os.chdir('../')
-        import doctest
-
-        m: Any
-        try:
-            import psdtags.psdtags
-
-            m = psdtags.psdtags
-        except ImportError:
-            m = None
-        doctest.testmod(m)
-        print()
         if os.path.exists('tests'):
             # print('running tests')
             test()
-        print()
         return 0
 
     if len(argv) == 1:
@@ -4082,13 +4148,12 @@ def main(argv: list[str] | None = None) -> int:
 
             if imageresources is not None:
                 irs = TiffImageResources.frombytes(imageresources, name=name)
-                print(irs)
-                print()
+                print(irs, '\n')  # noqa: T201
 
                 if 1036 in irs:
-                    thumbnailblock = cast(PsdThumbnailBlock, irs[1036])
+                    thumbnailblock = cast('PsdThumbnailBlock', irs[1036])
                 elif 1033 in irs:
-                    thumbnailblock = cast(PsdThumbnailBlock, irs[1033])
+                    thumbnailblock = cast('PsdThumbnailBlock', irs[1033])
                 else:
                     thumbnailblock = None
                 if thumbnailblock is not None:
@@ -4097,13 +4162,11 @@ def main(argv: list[str] | None = None) -> int:
                         imshow(thumbnail, title=thumbnailblock.title)
                         doplot = True
                     else:
-                        print('Thumbnail image size is zero')
-                        print()
+                        print('Thumbnail image size is zero\n')  # noqa: T201
 
             if imagesourcedata is not None:
                 isd = TiffImageSourceData.frombytes(imagesourcedata, name=name)
-                print(isd)
-                print()
+                print(isd, '\n')  # noqa: T201
                 if isd.layers and len(files) == 1:
                     for layer in isd.layers:
                         image = layer.asarray()
@@ -4111,14 +4174,16 @@ def main(argv: list[str] | None = None) -> int:
                             imshow(image, title=layer.title)
                             doplot = True
                         else:
-                            print(f'Layer {layer.name!r} image size is zero')
+                            print(  # noqa: T201
+                                f'Layer {layer.name!r} image size is zero'
+                            )
 
             if doplot:
                 pyplot.show()
 
         except ValueError as exc:
             # raise  # enable for debugging
-            print(fname, exc)
+            print(fname, exc)  # noqa: T201
             continue
     return 0
 
