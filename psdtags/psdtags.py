@@ -1,6 +1,6 @@
 # psdtags/psdtags.py
 
-# Copyright (c) 2022-2025, Christoph Gohlke
+# Copyright (c) 2022-2026, Christoph Gohlke
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2025.12.12
+:Version: 2026.1.8
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -74,16 +74,20 @@ This revision was tested with the following requirements and dependencies
 (other versions may work):
 
 - `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.11, 3.14.2 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.3.5
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2025.11.11
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.4.0
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.1.1
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.10.16
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.12.20
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.7
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.8
   (required for plotting)
 
 Revisions
 ---------
+
+2026.x.x
+
+- Improve code quality.
 
 2025.12.12
 
@@ -104,81 +108,9 @@ Revisions
 
 2025.1.1
 
-- Improve type hints.
-- Support Python 3.13.
+- …
 
-2024.5.24
-
-- Fix docstring examples not correctly rendered on GitHub.
-
-2024.2.22
-
-- Fix reading PsdBoolean (#10).
-- Fix order of PsdReferencePoint coordinates (breaking).
-- Allow reading unaligned PsdLayer blending_ranges.
-
-2024.1.15
-
-- Fix multi-threading.
-
-2024.1.8
-
-- Add option to compress layer channels in multiple threads.
-- Improve logging.
-- Drop support for Python 3.9 and numpy < 1.23 (NEP29).
-
-2023.8.24
-
-- Fix channel data in layer and pattern blocks must be in big-endian order.
-
-2023.6.15
-
-- Use PsdThumbnailFormat enum for PsdThumbnailBlock.format.
-
-2023.4.30
-
-- Few API changes (breaking).
-- Improve object repr.
-- Drop support for Python 3.8 and numpy < 1.21 (NEP29).
-
-2023.2.18
-
-- Allow unknown PsdKeys (#5).
-
-2023.2.8
-
-- Change PsdPoint and PsdReferencePoint signatures (breaking).
-- Add helper function to create composite from layers.
-
-2022.8.25
-
-- Update metadata.
-
-2022.2.11
-
-- Fix struct padding.
-- Support TiffImageResources.
-
-2022.2.2
-
-- Various API changes (breaking).
-- Handle additional layer information.
-- Preserve structures of unknown format as opaque bytes.
-- Add options to skip tag structures of unknown format.
-- Add abstract base class for tag structures.
-- Add classes for many structures.
-
-2022.1.18
-
-- Various API changes (breaking).
-- Various fixes for writing TiffImageSourceData.
-- Support filter masks.
-- Add option to change channel compression on write.
-- Warn when skipping ResourceKey sections.
-
-2022.1.14
-
-- Initial release.
+Refer to the CHANGES file for older revisions.
 
 Notes
 -----
@@ -261,7 +193,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2025.12.12'
+__version__ = '2026.1.8'
 
 __all__ = [
     'REPR_MAXLEN',
@@ -879,10 +811,12 @@ class PsdPascalString:
         """Return instance from open file."""
         size = fh.read(1)[0]
         if size > 255:
-            raise ValueError(f'invalid length of pascal string, {size} > 255')
+            msg = f'invalid length of pascal string, {size} > 255'
+            raise ValueError(msg)
         data = fh.read(size)
         if len(data) != size:
-            raise OSError(f'could not read enough data, {len(data)} != {size}')
+            msg = f'could not read enough data, {len(data)} != {size}'
+            raise OSError(msg)
         value = data.decode('macroman')
         fh.seek((pad - (size + 1) % pad) % pad, 1)
         return cls(value=value)
@@ -917,7 +851,8 @@ class PsdUnicodeString:
         assert size >= 0
         data = fh.read(size)
         if len(data) != size:
-            raise OSError(f'could not read enough data, {len(data)} != {size}')
+            msg = f'could not read enough data, {len(data)} != {size}'
+            raise OSError(msg)
         value = data.decode(psdformat.utf16)
         if value and value[-1] == '\0':
             value = value[:-1]
@@ -1435,7 +1370,8 @@ class PsdLayer:
                     datalist.append(channel.data)
                     break
         if len(datalist) == 0:
-            raise ValueError('no channel matching selection found')
+            msg = 'no channel matching selection found'
+            raise ValueError(msg)
         if len(datalist) == 1:
             data = datalist[0]
         else:
@@ -1570,7 +1506,8 @@ class PsdChannel:
     ) -> tuple[bytes, bytes]:
         """Return channel info and image data records."""
         if self.data is None:
-            raise ValueError('data is None')
+            msg = 'data is None'
+            raise ValueError(msg)
         if compression is None:
             compression = self.compression
         else:
@@ -1579,7 +1516,8 @@ class PsdChannel:
 
         dtype = self.data.dtype.newbyteorder(psdformat.byteorder)
         if dtype.char not in PsdLayers.TYPES.values():
-            raise ValueError(f'dtype {dtype!r} not supported')
+            msg = f'{dtype=!r} not supported'
+            raise ValueError(msg)
         data = numpy.asarray(self.data, dtype=dtype)
         rlecountfmt = psdformat.byteorder + ('I' if psdformat.isb64 else 'H')
 
@@ -1617,7 +1555,10 @@ class PsdChannel:
         return (
             isinstance(other, self.__class__)
             and self.channelid == other.channelid
-            and numpy.array_equal(self.data, other.data)
+            and numpy.array_equal(
+                [] if self.data is None else self.data,
+                [] if other.data is None else other.data,
+            )
             # and self.compression == other.compression
         )
 
@@ -1991,7 +1932,8 @@ class PsdPatterns(PsdKeyABC):
             if channel and channel.data is not None
         ]
         if len(datalist) == 0:
-            raise ValueError('no channel data found')
+            msg = 'no channel data found'
+            raise ValueError(msg)
         if len(datalist) == 1:
             return datalist[0]
         data: NDArray[Any] = numpy.stack(datalist)
@@ -2317,7 +2259,10 @@ class PsdVirtualMemoryArray:
             and self.depth == other.depth
             and self.pixeldepth == other.pixeldepth
             and self.rectangle == other.rectangle
-            and numpy.array_equal(self.data, other.data)
+            and numpy.array_equal(
+                [] if self.data is None else self.data,
+                [] if other.data is None else other.data,
+            )
             # and self.compression == other.compression
         )
 
@@ -2687,13 +2632,15 @@ class PsdUnknown(PsdKeyABC):
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write opaque binary value to open file."""
         if len(self.value) <= 1 or self.psdformat != psdformat:
-            raise ValueError(f'can not write opaque bytes as {psdformat}')
+            msg = f'can not write opaque bytes as {psdformat}'
+            raise ValueError(msg)
         return fh.write(self.value)
 
     def tobytes(self, psdformat: PsdFormat, /) -> bytes:
         """Return opaque binary value."""
         if len(self.value) <= 1 or self.psdformat != psdformat:
-            raise ValueError(f'can not write opaque bytes as{psdformat}')
+            msg = f'can not write opaque bytes as {psdformat}'
+            raise ValueError(msg)
         return self.value
 
     def __hash__(self) -> int:
@@ -3220,14 +3167,15 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
             data = numpy.frombuffer(self.rawdata, dtype=numpy.uint8)
             data.shape = (self.height, (self.width * 24 + 31) // 32 * 4)
             data = data[:, : self.width * 3]
-            data = data.reshape(self.height, self.width, 3)
+            data = data.reshape((self.height, self.width, 3))
         elif self.format == PsdThumbnailFormat.JPEG_RGB:
             from imagecodecs import jpeg8_decode
 
             data = jpeg8_decode(self.rawdata)
             assert data.shape == (self.height, self.width, 3)
         else:
-            raise ValueError(f'unknown PsdThumbnailBlock format {format!r}')
+            msg = f'unknown PsdThumbnailBlock {format=!r}'
+            raise ValueError(msg)
         return data
 
     @property
@@ -3269,7 +3217,8 @@ class TiffImageSourceData:
 
         signature = fh.read(len(TiffImageSourceData.SIGNATURE))
         if signature != TiffImageSourceData.SIGNATURE:
-            raise ValueError(f'invalid ImageResourceData {signature!r}')
+            msg = f'invalid ImageResourceData {signature!r}'
+            raise ValueError(msg)
 
         signature = fh.read(4)
         if len(signature) == 0:
@@ -3348,7 +3297,8 @@ class TiffImageSourceData:
         """Return instance from TIFF file."""
         data = read_tifftag(filename, 37724, pageindex=pageindex)
         if data is None:
-            raise ValueError('TIFF file contains no ImageSourceData tag')
+            msg = 'TIFF file contains no ImageSourceData tag'
+            raise ValueError(msg)
         return cls.frombytes(
             data, name=os.path.split(filename)[-1], unknown=unknown
         )
@@ -3499,7 +3449,8 @@ class TiffImageResources:
         """Return instance from ImageResources tag in TIFF file."""
         data = read_tifftag(filename, 34377, pageindex=pageindex)
         if data is None:
-            raise ValueError('TIFF file contains no ImageResources tag')
+            msg = 'TIFF file contains no ImageResources tag'
+            raise ValueError(msg)
         return cls.frombytes(data, name=os.path.split(filename)[-1])
 
     def write(self, fh: BinaryIO) -> int:
@@ -3835,7 +3786,8 @@ def compress(
     """Return compressed big-endian numpy array."""
     data = data.astype(data.dtype.newbyteorder('>'))
     if data.dtype.char not in 'BHf':
-        raise ValueError(f'data type {data.dtype!r} not supported')
+        msg = f'{data.dtype=!r} not supported'
+        raise ValueError(msg)
 
     if data.size == 0:
         return b''
@@ -3863,7 +3815,8 @@ def compress(
         fmt = f'{rlecountfmt[0]}{len(sizes)}{rlecountfmt[1]}'
         return struct.pack(fmt, *sizes) + b''.join(lines)
 
-    raise ValueError(f'unknown compression type {compression!r}')
+    msg = f'{compression=!r} unknown'
+    raise ValueError(msg)
 
 
 def decompress(
@@ -3876,7 +3829,8 @@ def decompress(
     """Return decompressed numpy array."""
     dtype = numpy.dtype(dtype).newbyteorder('>')
     if dtype.char not in 'BHf':
-        raise ValueError(f'data type {dtype!r} not supported')
+        msg = f'{dtype=!r} not supported'
+        raise ValueError(msg)
 
     uncompressed_size = product(shape) * dtype.itemsize
     if uncompressed_size == 0:
@@ -3906,7 +3860,8 @@ def decompress(
         data = imagecodecs.packbits_decode(data[offset:])
         return numpy.frombuffer(data, dtype=dtype).reshape(shape).copy()
 
-    raise ValueError(f'unknown compression type {compression!r}')
+    msg = f'{compression=!r} unknown'
+    raise ValueError(msg)
 
 
 def overlay(
@@ -3942,7 +3897,8 @@ def overlay(
         shape = layers[0][0].shape
 
     if len(shape) != 2:
-        raise ValueError(f'invalid canvas {shape=}')
+        msg = f'invalid canvas {shape=}'
+        raise ValueError(msg)
 
     def over(
         b: NDArray[Any], a: NDArray[Any], offset: tuple[int, int] | None
@@ -3956,7 +3912,8 @@ def overlay(
             or offset[0] + a.shape[0] > shape[0]
             or offset[1] + a.shape[1] > shape[1]
         ):
-            raise ValueError('layer is out of canvas bounds')
+            msg = 'layer is out of canvas bounds'
+            raise ValueError(msg)
         b = b[
             slice(offset[0], offset[0] + a.shape[0]),
             slice(offset[1], offset[1] + a.shape[1]),
@@ -3971,7 +3928,8 @@ def overlay(
     for layer in layers:
         layer_shape = layer[0].shape
         if len(layer_shape) != 3 or layer_shape[2] != 4:
-            raise ValueError(f'not an RGBA image {layer_shape=}')
+            msg = f'not an RGBA image {layer_shape=}'
+            raise ValueError(msg)
         over(composite, layer[0] / vmax, layer[1])
     composite *= vmax
     return composite.astype(dtype)
