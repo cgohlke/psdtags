@@ -20,7 +20,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.1.8
+:Version: 2026.1.29
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -47,10 +47,10 @@ This revision was tested with the following requirements and dependencies
 (other versions may work):
 
 - `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.11, 3.14.2 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.4.0
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.1.1
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.4.1
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.1.14
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.12.20
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2026.1.28
   (required for reading/writing tags from/to TIFF files)
 - `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.8
   (required for plotting)
@@ -58,7 +58,11 @@ This revision was tested with the following requirements and dependencies
 Revisions
 ---------
 
-2026.x.x
+2026.1.29
+
+- Fix code review issues.
+
+2026.1.8
 
 - Improve code quality.
 
