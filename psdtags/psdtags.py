@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.1.8
+:Version: 2026.1.29
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -74,10 +74,10 @@ This revision was tested with the following requirements and dependencies
 (other versions may work):
 
 - `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.11, 3.14.2 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.4.0
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.1.1
+- `NumPy <https://pypi.org/project/numpy/>`_ 2.4.1
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.1.14
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2025.12.20
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2026.1.28
   (required for reading/writing tags from/to TIFF files)
 - `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.8
   (required for plotting)
@@ -85,7 +85,11 @@ This revision was tested with the following requirements and dependencies
 Revisions
 ---------
 
-2026.x.x
+2026.1.29
+
+- Fix code review issues.
+
+2026.1.8
 
 - Improve code quality.
 
@@ -193,7 +197,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2026.1.8'
+__version__ = '2026.1.29'
 
 __all__ = [
     'REPR_MAXLEN',
@@ -809,10 +813,11 @@ class PsdPascalString:
     @classmethod
     def read(cls, fh: BinaryIO, pad: int = 1) -> PsdPascalString:
         """Return instance from open file."""
-        size = fh.read(1)[0]
-        if size > 255:
-            msg = f'invalid length of pascal string, {size} > 255'
-            raise ValueError(msg)
+        size_byte = fh.read(1)
+        if len(size_byte) == 0:
+            msg = 'unexpected end of file reading pascal string size'
+            raise OSError(msg)
+        size = size_byte[0]
         data = fh.read(size)
         if len(data) != size:
             msg = f'could not read enough data, {len(data)} != {size}'
@@ -847,7 +852,11 @@ class PsdUnicodeString:
     @classmethod
     def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> PsdUnicodeString:
         """Return instance from open file."""
-        size = psdformat.read(fh, 'I') * 2
+        length = psdformat.read(fh, 'I')
+        if length > 0x7FFFFFFF:  # prevent overflow
+            msg = f'unicode string length too large: {length}'
+            raise ValueError(msg)
+        size = length * 2
         assert size >= 0
         data = fh.read(size)
         if len(data) != size:
@@ -1004,7 +1013,7 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
             return fh.getvalue()
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}{enumstr(self.key)})>'
+        return f'<{self.__class__.__name__}({enumstr(self.key)})>'
 
 
 @dataclass(repr=False)
@@ -1044,7 +1053,11 @@ class PsdLayers(PsdKeyABC):
         ]
 
         # channel image data
-        dtype = PsdLayers.TYPES[key]
+        try:
+            dtype = PsdLayers.TYPES[key]
+        except KeyError:
+            msg = f'invalid layer {key=}'
+            raise ValueError(msg) from None
         shape: tuple[int, ...] = ()
         for layer in layers:
             for channel in layer.channels:
@@ -1741,7 +1754,6 @@ class PsdLayerMask:
                 f'real_flags={enumstr(self.real_flags)},',
                 f'real_background={self.real_background},',
                 f'real_rectangle={self.real_rectangle},',
-                repr(self.real_flags),
             ]
         return indent(*info, end='\n)')
 
@@ -2098,6 +2110,9 @@ class PsdVirtualMemoryArrayList:
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write virtual memory array list to open file."""
+        if len(self.channels) < 2:
+            msg = f'invalid number of channels {len(self.channels)} < 2'
+            raise ValueError(msg)
         psdformat.write(fh, 'I', 3)
         length_pos = fh.tell()
         psdformat.write(fh, 'I', 0)  # length placeholder
@@ -2162,6 +2177,9 @@ class PsdVirtualMemoryArray:
         rectangle = PsdRectangle(*psdformat.read(fh, '4I'))
         pixeldepth = psdformat.read(fh, 'H')
         compression = PsdCompressionType(psdformat.read(fh, 'B'))
+        if pixeldepth not in {8, 16, 32}:
+            msg = f'invalid {pixeldepth=}, expected 8, 16, or 32'
+            raise ValueError(msg) from None
         dtype = {8: 'B', 16: 'H', 32: 'f'}[pixeldepth]
 
         data = decompress(
@@ -2225,6 +2243,9 @@ class PsdVirtualMemoryArray:
         """Data type of virtual memory array."""
         if self.pixeldepth is None:
             return numpy.dtype('B')
+        if self.pixeldepth not in {8, 16, 32}:
+            msg = f'invalid {self.pixeldepth=}, expected 8, 16, or 32'
+            raise ValueError(msg) from None
         return numpy.dtype({8: 'B', 16: 'H', 32: 'f'}[self.pixeldepth])
 
     @property
@@ -3378,6 +3399,7 @@ class TiffImageSourceData:
         """Byte-order of PSD structures."""
         return self.psdformat.byteorder
 
+    @property
     def has_unknowns(self) -> bool:
         """ImageSourceData has unknown structures in info or layers."""
         return any(isinstance(tag, PsdUnknown) for tag in self.info) or any(
@@ -3425,12 +3447,12 @@ class TiffImageResources:
         cls, fh: BinaryIO, length: int, name: str | None = None
     ) -> TiffImageResources:
         """Return instance from open file."""
-        fname = type(fh).__name__ if name is None else name
+        filename = type(fh).__name__ if name is None else name
         blocks = read_psdblocks(fh, length=length)
 
         return cls(
             psdformat=PsdFormat.BE32BIT,
-            name=fname,
+            name=filename,
             blocks=blocks,
         )
 
@@ -3505,7 +3527,11 @@ class TiffImageResources:
         return len(self.blocks)
 
     def __getitem__(self, key: int) -> PsdResourceBlockABC:
-        return self.blocks_dict[key]
+        try:
+            return self.blocks_dict[key]
+        except KeyError:
+            msg = f'resource block {key=} not found'
+            raise KeyError(msg) from None
 
     def __iter__(self) -> Generator[PsdResourceBlockABC]:
         yield from self.blocks
@@ -3810,6 +3836,9 @@ def compress(
     if compression == PsdCompressionType.RLE:
         import imagecodecs
 
+        if data.ndim == 0:
+            msg = 'cannot compress 0-dimensional array with RLE'
+            raise ValueError(msg)
         lines = [imagecodecs.packbits_encode(line) for line in data]
         sizes = [len(line) for line in lines]
         fmt = f'{rlecountfmt[0]}{len(sizes)}{rlecountfmt[1]}'
@@ -3857,6 +3886,9 @@ def decompress(
         import imagecodecs
 
         offset = shape[0] * struct.calcsize(rlecountfmt)
+        if offset > len(data):
+            msg = f'RLE {offset=} > {len(data)=}'
+            raise ValueError(msg)
         data = imagecodecs.packbits_decode(data[offset:])
         return numpy.frombuffer(data, dtype=dtype).reshape(shape).copy()
 
@@ -3890,11 +3922,18 @@ def overlay(
         Overlay of image layers.
 
     """
-    dtype = layers[0][0].dtype
+    if not layers:
+        msg = 'at least one layer required'
+        raise ValueError(msg) from None
+    try:
+        dtype = layers[0][0].dtype
+    except (IndexError, TypeError) as exc:
+        msg = 'invalid layer format'
+        raise ValueError(msg) from exc
     if vmax is None:
         vmax = 1.0 if dtype.kind == 'f' else numpy.iinfo(dtype).max
     if shape is None:
-        shape = layers[0][0].shape
+        shape = layers[0][0].shape[:2]
 
     if len(shape) != 2:
         msg = f'invalid canvas {shape=}'
@@ -3922,7 +3961,10 @@ def overlay(
         b *= x
         b += a * a[..., 3:]
         b[..., 3] = a[..., 3] + x[..., 0]
-        b[..., :3] /= b[..., 3:]
+        # avoid division by zero
+        alpha = b[..., 3:]
+        mask = alpha > 0
+        b[..., :3] = numpy.where(mask, b[..., :3] / alpha, b[..., :3])
 
     composite = numpy.zeros((*shape, 4))
     for layer in layers:
@@ -4095,11 +4137,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         files = argv[1:]
 
-    for fname in files:
-        name = os.path.split(fname)[-1]
+    for filename in files:
+        name = os.path.split(filename)[-1]
         doplot = False
         try:
-            with TiffFile(fname) as tif:
+            with TiffFile(filename) as tif:
                 tags = tif.pages[0].aspage().tags
                 imagesourcedata = tags.valueof(37724)
                 imageresources = tags.valueof(34377)
@@ -4141,7 +4183,7 @@ def main(argv: list[str] | None = None) -> int:
 
         except ValueError as exc:
             # raise  # enable for debugging
-            print(fname, exc)  # noqa: T201
+            print(filename, exc)  # noqa: T201
             continue
     return 0
 
