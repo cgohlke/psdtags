@@ -47,7 +47,7 @@ Adobe Photoshop is a registered trademark of Adobe Systems Inc.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.1.29
+:Version: 2026.11.1
 :DOI: `10.5281/zenodo.7879187 <https://doi.org/10.5281/zenodo.7879187>`_
 
 Quickstart
@@ -62,7 +62,8 @@ View the layer image and metadata stored in a layered TIFF file::
 
     python -m psdtags file.tif
 
-See `Examples`_ for using the programming interface.
+See `Examples`_ and `Documentation <https://www.cgohlke.com/docs/psdtags/>`_
+for using the programming interface.
 
 Source code, examples, and support are available on
 `GitHub <https://github.com/cgohlke/psdtags>`_.
@@ -73,17 +74,33 @@ Requirements
 This revision was tested with the following requirements and dependencies
 (other versions may work):
 
-- `CPython <https://www.python.org>`_ 3.11.9, 3.12.10, 3.13.11, 3.14.2 64-bit
-- `NumPy <https://pypi.org/project/numpy/>`_ 2.4.1
-- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.1.14
+- `CPython <https://www.python.org>`_ 3.12.10, 3.13.17, 3.14.10, 3.15.2 64-bit
+- `Numpy <https://pypi.org/project/numpy>`_ 2.5.4
+- `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.10.10
   (required for compressing/decompressing image data)
-- `Tifffile <https://pypi.org/project/tifffile/>`_ 2026.1.28
+- `Tifffile <https://pypi.org/project/tifffile/>`_ 2026.10.15
   (required for reading/writing tags from/to TIFF files)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.10.8
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.11.2
   (required for plotting)
 
 Revisions
 ---------
+
+2026.11.1
+
+- Store multiple patterns in PsdPatterns, add PsdPattern class (breaking).
+- Return pseudo-members for undefined enum values (breaking).
+- Add PsdDescriptor and PsdDescriptorBlock opaque structures.
+- Add experimental PsdDescriptor and PsdDescriptorBlock parsing.
+- Skip opaque descriptors if unknown is False.
+- Fix unknown keys overwriting each other or being reversed.
+- Fix reading layer mask parameters and real user mask channel.
+- Fix reading LINKED_LAYER_EXTERNAL key.
+- Fix writing short PsdUnknown values.
+- Fix PsdMetadataSettings.write return value.
+- Replace PsdLayer.mask None with empty PsdLayerMask.
+- Drop support for Python 3.11 and numpy 2.1.
+- Support Python 3.15.
 
 2026.1.29
 
@@ -92,25 +109,6 @@ Revisions
 2026.1.8
 
 - Improve code quality.
-
-2025.12.12
-
-- Make boolean and optional parameters keyword-only (breaking).
-
-2025.9.19
-
-- Write MTrn key before layers (#17).
-
-2025.9.15
-
-- Add CAI, GENI, and OCIO keys.
-- Drop support for Python 3.10.
-
-2025.5.10
-
-- Support Python 3.14.
-
-2025.1.1
 
 - …
 
@@ -124,6 +122,9 @@ The API is not stable yet and might change between revisions.
 This library has been tested with a limited number of files only.
 
 Additional layer information is not yet supported.
+
+To enable experimental descriptor parsing, set the
+``PSDTAGS_DESCRIPTOR_PARSING=1`` environment variable.
 
 Consider `psd-tools <https://github.com/psd-tools/psd-tools>`_ and
 `pytoshop <https://github.com/mdboom/pytoshop>`_  for working with
@@ -141,6 +142,7 @@ Examples
 Read the ImageSourceData tag value from a layered TIFF file and iterate over
 all the channels:
 
+>>> from psdtags import TiffImageSourceData
 >>> isd = TiffImageSourceData.fromtiff('layered.tif')
 >>> for layer in isd.layers:
 ...     layer.name
@@ -160,6 +162,7 @@ all the channels:
 Read the ImageResources tag value from the TIFF file, iterate over the blocks,
 and get the thumbnail image:
 
+>>> from psdtags import TiffImageResources
 >>> res = TiffImageResources.fromtiff('layered.tif')
 >>> for block in res.blocks:
 ...     blockname = block.name
@@ -197,7 +200,7 @@ creating a layered TIFF file from individual layer images.
 
 from __future__ import annotations
 
-__version__ = '2026.1.29'
+__version__ = '2026.11.1'
 
 __all__ = [
     'REPR_MAXLEN',
@@ -211,6 +214,8 @@ __all__ = [
     'PsdColorSpaceType',
     'PsdColorType',
     'PsdCompressionType',
+    'PsdDescriptor',
+    'PsdDescriptorBlock',
     'PsdEmpty',
     'PsdExposure',
     'PsdFilterMask',
@@ -230,6 +235,7 @@ __all__ = [
     'PsdPascalString',
     'PsdPascalStringBlock',
     'PsdPascalStringsBlock',
+    'PsdPattern',
     'PsdPatterns',
     'PsdPoint',
     'PsdRectangle',
@@ -244,6 +250,7 @@ __all__ = [
     'PsdStringsBlock',
     'PsdTextEngineData',
     'PsdThumbnailBlock',
+    'PsdThumbnailFormat',
     'PsdUnicodeString',
     'PsdUnknown',
     'PsdUserMask',
@@ -282,13 +289,21 @@ import numpy
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterable, Sequence
-    from typing import Any, BinaryIO, Literal
+    from typing import Any, BinaryIO, Literal, Self
 
     from numpy.typing import DTypeLike, NDArray
 
 
 REPR_MAXLEN = 24
 """Maximum length of bytes to show in repr()."""
+
+
+def _pseudo_member(cls: Any, value: Any, name: str = 'UNKNOWN') -> Any:
+    """Return new enum pseudo-member for value not defined in enum."""
+    obj = cls._member_type_.__new__(cls, value)
+    obj._name_ = name
+    obj._value_ = value
+    return obj
 
 
 class BytesEnumMeta(enum.EnumMeta):
@@ -304,24 +319,20 @@ class BytesEnumMeta(enum.EnumMeta):
     def __call__(cls: Any, *args: Any, **kwds: Any) -> Any:
         try:
             # big endian
-            c = enum.EnumMeta.__call__(cls, *args, **kwds)
+            return enum.EnumMeta.__call__(cls, *args, **kwds)
+        except ValueError as exc:
+            if not args or not isinstance(args[0], bytes):
+                raise
+            error = exc
+        value = args[0]
+        try:
+            # little endian
+            return enum.EnumMeta.__call__(cls, value[::-1], *args[1:], **kwds)
         except ValueError:
-            try:
-                # little endian
-                if args:
-                    args = (args[0][::-1], *args[1:])
-                c = enum.EnumMeta.__call__(cls, *args, **kwds)
-            except Exception:
-                if args and len(args[0]) == 4 and args[0].strip().isalnum():
-                    logger().warning(
-                        f'psdtags.{cls.__name__}({args[0]!r}) not defined'
-                    )
-                    newargs = (b'?unk', *args[1:])
-                    c = enum.EnumMeta.__call__(cls, *newargs, **kwds)
-                    c._value_ = args[0]
-                else:
-                    raise
-        return c
+            if len(value) != 4 or not all(0x20 <= c < 0x7F for c in value):
+                raise error from None
+        logger().warning(f'psdtags.{cls.__name__}({value!r}) not defined')
+        return _pseudo_member(cls, value)
 
 
 class BytesEnum(bytes, enum.Enum, metaclass=BytesEnumMeta):
@@ -532,15 +543,15 @@ class PsdResourceId(enum.IntEnum):
     PRINT_FLAGS_INFO = 10000
 
     @classmethod
-    def _missing_(cls, value: object) -> object:
+    def _missing_(cls, value: object) -> Self:
         assert isinstance(value, int)
         if 2000 <= value <= 2997:
-            obj = cls(2000)  # PATH_INFO
+            name = 'PATH_INFO'
         elif 4000 <= value <= 4999:
-            obj = cls(4000)  # PATH_INFO
+            name = 'PLUGIN_RESOURCE'
         else:
-            obj = cls(-1)  # UNKNOWN
-        obj._value_ = value
+            name = 'UNKNOWN'
+        obj: Self = _pseudo_member(cls, value, name)
         return obj
 
 
@@ -604,10 +615,9 @@ class PsdColorSpaceType(enum.IntEnum):
     OpacityFloat = 19
 
     @classmethod
-    def _missing_(cls, value: object) -> object:
+    def _missing_(cls, value: object) -> Self:
         assert isinstance(value, int)
-        obj = cls(-1)
-        obj._value_ = value
+        obj: Self = _pseudo_member(cls, value)
         return obj
 
 
@@ -625,10 +635,9 @@ class PsdImageMode(enum.IntEnum):
     Lab = 9
 
     @classmethod
-    def _missing_(cls, value: object) -> object:
+    def _missing_(cls, value: object) -> Self:
         assert isinstance(value, int)
-        obj = cls(-1)
-        obj._value_ = value
+        obj: Self = _pseudo_member(cls, value)
         return obj
 
 
@@ -667,10 +676,9 @@ class PsdCompressionType(enum.IntEnum):
     ZIP_PREDICTED = 3
 
     @classmethod
-    def _missing_(cls, value: object) -> object:
+    def _missing_(cls, value: object) -> Self:
         assert isinstance(value, int)
-        obj = cls(-1)
-        obj._value_ = value
+        obj: Self = _pseudo_member(cls, value)
         return obj
 
 
@@ -682,10 +690,9 @@ class PsdThumbnailFormat(enum.IntEnum):
     JPEG_RGB = 1  # kJpegRGB
 
     @classmethod
-    def _missing_(cls, value: object) -> object:
+    def _missing_(cls, value: object) -> Self:
         assert isinstance(value, int)
-        obj = cls(-1)
-        obj._value_ = value
+        obj: Self = _pseudo_member(cls, value)
         return obj
 
 
@@ -742,10 +749,9 @@ class PsdColorType(enum.IntEnum):
     GRAY = 7
 
     @classmethod
-    def _missing_(cls, value: object) -> object:
+    def _missing_(cls, value: object) -> Self:
         assert isinstance(value, int)
-        obj = cls(-1)
-        obj._value_ = value
+        obj: Self = _pseudo_member(cls, value)
         return obj
 
 
@@ -759,10 +765,9 @@ class PsdSectionDividerType(enum.IntEnum):
     BOUNDING_SECTION_DIVIDER = 3
 
     @classmethod
-    def _missing_(cls, value: object) -> object:
+    def _missing_(cls, value: object) -> Self:
         assert isinstance(value, int)
-        obj = cls(-1)
-        obj._value_ = value
+        obj: Self = _pseudo_member(cls, value)
         return obj
 
 
@@ -811,7 +816,7 @@ class PsdPascalString:
     value: str
 
     @classmethod
-    def read(cls, fh: BinaryIO, pad: int = 1) -> PsdPascalString:
+    def read(cls, fh: BinaryIO, pad: int = 1) -> Self:
         """Return instance from open file."""
         size_byte = fh.read(1)
         if len(size_byte) == 0:
@@ -836,6 +841,9 @@ class PsdPascalString:
         pad = fh.write(b'\0' * ((pad - (size + 1) % pad) % pad))
         return 1 + size + pad
 
+    def __hash__(self) -> int:
+        return hash(self.value)
+
     def __str__(self) -> str:
         return self.value
 
@@ -850,9 +858,11 @@ class PsdUnicodeString:
     value: str
 
     @classmethod
-    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> PsdUnicodeString:
+    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> Self:
         """Return instance from open file."""
         length = psdformat.read(fh, 'I')
+        if length == 0:
+            return cls(value='')
         if length > 0x7FFFFFFF:  # prevent overflow
             msg = f'unicode string length too large: {length}'
             raise ValueError(msg)
@@ -862,7 +872,7 @@ class PsdUnicodeString:
         if len(data) != size:
             msg = f'could not read enough data, {len(data)} != {size}'
             raise OSError(msg)
-        value = data.decode(psdformat.utf16)
+        value = data.decode(psdformat.utf16, errors='replace')
         if value and value[-1] == '\0':
             value = value[:-1]
         return cls(value=value)
@@ -871,10 +881,16 @@ class PsdUnicodeString:
         self, fh: BinaryIO, psdformat: PsdFormat, /, *, terminate: bool = True
     ) -> int:
         """Write unicode string to open file."""
-        value = self.value + '\0' if terminate else self.value
-        written = psdformat.write(fh, 'I', len(value))
-        written += fh.write(value.encode(psdformat.utf16))
+        value = self.value
+        if terminate and (not value or value[-1] != '\0'):
+            value += '\0'
+        data = value.encode(psdformat.utf16, errors='replace')
+        written = psdformat.write(fh, 'I', len(data) // 2)
+        written += fh.write(data)
         return written
+
+    def __hash__(self) -> int:
+        return hash(self.value)
 
     def __str__(self) -> str:
         return self.value
@@ -964,6 +980,11 @@ class PsdFormat(bytes, enum.Enum):
             fmt = self.byteorder + 'I'
         return struct.pack(fmt, value)
 
+    def read_signature(self, fh: BinaryIO, /) -> bytes:
+        """Return four-byte signature or key from file in big-endian order."""
+        signature = fh.read(4)
+        return signature if self.byteorder == '>' else signature[::-1]
+
     def write_signature(self, fh: BinaryIO, signature: bytes, /) -> int:
         """Write signature to file."""
         return fh.write(
@@ -991,13 +1012,13 @@ class PsdKeyABC(metaclass=abc.ABCMeta):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdKeyABC:
+    ) -> Self:
         """Return instance from open file."""
 
     @classmethod
     def frombytes(
         cls, data: bytes, psdformat: PsdFormat, key: PsdKey, /
-    ) -> PsdKeyABC:
+    ) -> Self:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
             return cls.read(fh, psdformat, key, length=len(data))
@@ -1040,7 +1061,7 @@ class PsdLayers(PsdKeyABC):
         length: int,
         *,
         unknown: bool = True,
-    ) -> PsdLayers:
+    ) -> Self:
         """Return instance from open file."""
         del length  # unused
         count = psdformat.read(fh, 'h')
@@ -1061,10 +1082,15 @@ class PsdLayers(PsdKeyABC):
         shape: tuple[int, ...] = ()
         for layer in layers:
             for channel in layer.channels:
-                if channel.channelid < -1 and layer.mask is not None:
-                    shape = layer.mask.shape
-                else:
+                if channel.channelid >= -1:
                     shape = layer.shape
+                elif (
+                    channel.channelid == PsdChannelId.REAL_USER_LAYER_MASK
+                    and layer.mask.real_rectangle is not None
+                ):
+                    shape = layer.mask.real_rectangle.shape
+                else:
+                    shape = layer.mask.shape
                 channel.read_image(fh, psdformat, shape, dtype)
 
         return cls(
@@ -1082,7 +1108,7 @@ class PsdLayers(PsdKeyABC):
         /,
         *,
         unknown: bool = True,
-    ) -> PsdLayers:
+    ) -> Self:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
             return cls.read(
@@ -1101,7 +1127,7 @@ class PsdLayers(PsdKeyABC):
     ) -> int:
         """Write layer records and channel info data to open file."""
         pos = fh.tell()
-        # channel count
+        # layer count
         psdformat.write(
             fh, 'h', (-1 if self.has_transparency else 1) * len(self.layers)
         )
@@ -1158,7 +1184,7 @@ class PsdLayers(PsdKeyABC):
         for layer in self.layers:
             shape[0] = max(shape[0], layer.rectangle[2])
             shape[1] = max(shape[1], layer.rectangle[3])
-            if layer.mask is not None and layer.mask.rectangle is not None:
+            if layer.mask.rectangle is not None:
                 shape[0] = max(shape[0], layer.mask.rectangle[2])
                 shape[1] = max(shape[1], layer.mask.rectangle[3])
         return shape[0], shape[1]
@@ -1179,13 +1205,12 @@ class PsdLayers(PsdKeyABC):
         yield from self.layers
 
     def __repr__(self) -> str:
-        sz = len(self.layers)
         return indent(
             f'{self.__class__.__name__}(',
             f'# {self.shape!r} {self.dtype}',
-            f'key={enumstr(self.key)},',
+            f'{enumstr(self.key)},',
             f'has_transparency={self.has_transparency},',
-            f'layers=[  # {sz}\n    {indent(*self.layers, sep=",")},\n],',
+            reprlist('layers', self.layers),
             end='\n)',
         )
 
@@ -1197,7 +1222,9 @@ class PsdLayer:
     name: str
     channels: list[PsdChannel]
     rectangle: PsdRectangle
-    mask: PsdLayerMask | None = None
+    mask: PsdLayerMask = field(
+        default_factory=lambda: PsdLayerMask()  # noqa: PLW0108
+    )
     opacity: int = 255
     blendmode: PsdBlendMode = PsdBlendMode.NORMAL
     blending_ranges: tuple[int, ...] = ()
@@ -1205,10 +1232,14 @@ class PsdLayer:
     flags: PsdLayerFlag = PsdLayerFlag.BASE
     info: list[Any] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        if cast('PsdLayerMask | None', self.mask) is None:
+            self.mask = PsdLayerMask()
+
     @classmethod
     def read(
         cls, fh: BinaryIO, psdformat: PsdFormat, /, *, unknown: bool = True
-    ) -> PsdLayer:
+    ) -> Self:
         """Return instance from open file.
 
         Channel image data must be read separately.
@@ -1220,7 +1251,7 @@ class PsdLayer:
 
         signature = fh.read(4)
         assert signature in (b'8BIM', b'MIB8')
-        blendmode = PsdBlendMode(fh.read(4))
+        blendmode = PsdBlendMode(psdformat.read_signature(fh))
         opacity = fh.read(1)[0]
         clipping = PsdClippingType(fh.read(1)[0])
         flags = PsdLayerFlag(fh.read(1)[0])
@@ -1265,7 +1296,7 @@ class PsdLayer:
         )
 
     @classmethod
-    def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> PsdLayer:
+    def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> Self:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
             return cls.read(fh, psdformat)
@@ -1316,11 +1347,7 @@ class PsdLayer:
         pos = fh.tell()
 
         # layer mask data
-        if self.mask is None:
-            psdformat.write(fh, 'I', 0)
-        else:
-            size = self.mask.write(fh, psdformat)
-            assert size in (4, 24, 40)
+        self.mask.write(fh, psdformat)
 
         # layer blending ranges
         psdformat.write(fh, 'I', len(self.blending_ranges) * 4)
@@ -1445,12 +1472,10 @@ class PsdLayer:
         )
 
     def __repr__(self) -> str:
-        szc = len(self.channels)
-        szi = len(self.info)
         return indent(
             f'{self.__class__.__name__}(',
             f'name={self.name!r},',
-            f'channels=[  # {szc}\n    {indent(*self.channels, sep=",")},\n],',
+            reprlist('channels', self.channels),
             f'rectangle={self.rectangle},',
             f'mask={self.mask},',
             f'opacity={self.opacity},',
@@ -1458,7 +1483,7 @@ class PsdLayer:
             f'blending_ranges={self.blending_ranges},',
             f'clipping={enumstr(self.clipping)},',
             f'flags={enumstr(self.flags)},',
-            f'info=[  # {szi}\n    {indent(*self.info, sep=",")},\n],',
+            reprlist('info', self.info),
             end='\n)',
         )
 
@@ -1473,7 +1498,7 @@ class PsdChannel:
     _data_length: int = 0
 
     @classmethod
-    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> PsdChannel:
+    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> Self:
         """Return instance from open file.
 
         Channel image data must be read separately using
@@ -1485,7 +1510,7 @@ class PsdChannel:
         return cls(channelid=channelid, _data_length=data_length)
 
     @classmethod
-    def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> PsdChannel:
+    def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> Self:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
             return cls.read(fh, psdformat)
@@ -1585,7 +1610,7 @@ class PsdChannel:
             )
         return indent(
             f'{self.__class__.__name__}(',
-            f'channelid={enumstr(self.channelid)},',
+            f'{enumstr(self.channelid)},',
             f'compression={enumstr(self.compression)},',
             data,
             end='\n)',
@@ -1608,12 +1633,13 @@ class PsdLayerMask:
     real_rectangle: PsdRectangle | None = None
 
     @classmethod
-    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> PsdLayerMask:
+    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> Self:
         """Return instance from open file."""
         size = psdformat.read(fh, 'I')
         if size == 0:
             return cls()
 
+        end = fh.tell() + size
         rectangle = PsdRectangle(*psdformat.read(fh, 'iiii'))
         default_color = fh.read(1)[0]
         flags = PsdLayerMaskFlag(fh.read(1)[0])
@@ -1622,7 +1648,7 @@ class PsdLayerMask:
         user_mask_feather = None
         vector_mask_density = None
         vector_mask_feather = None
-        if flags & 0b1000:
+        if flags & PsdLayerMaskFlag.APPLIED:
             param_flags = PsdLayerMaskParameterFlag(fh.read(1)[0])
             if param_flags & PsdLayerMaskParameterFlag.USER_DENSITY:
                 user_mask_density = fh.read(1)[0]
@@ -1633,15 +1659,16 @@ class PsdLayerMask:
             if param_flags & PsdLayerMaskParameterFlag.VECTOR_FEATHER:
                 vector_mask_feather = psdformat.read(fh, 'd')
 
-        if size == 20:
-            fh.seek(2, 1)  # padding
-            real_flags = None
-            real_background = None
-            real_rectangle = None
-        else:
+        if end - fh.tell() >= 18:
             real_flags = PsdLayerMaskFlag(fh.read(1)[0])
             real_background = fh.read(1)[0]
             real_rectangle = PsdRectangle(*psdformat.read(fh, 'iiii'))
+        else:
+            # padding
+            real_flags = None
+            real_background = None
+            real_rectangle = None
+        fh.seek(end)
 
         return cls(
             rectangle=rectangle,
@@ -1657,7 +1684,7 @@ class PsdLayerMask:
         )
 
     @classmethod
-    def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> PsdLayerMask:
+    def frombytes(cls, data: bytes, psdformat: PsdFormat, /) -> Self:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
             return cls.read(fh, psdformat)
@@ -1667,10 +1694,10 @@ class PsdLayerMask:
         if self.rectangle is None:
             return psdformat.pack('I', 0)
 
-        flags = self.flags
+        flags = self.flags & ~PsdLayerMaskFlag.APPLIED
         param_flags = self.param_flags
         if param_flags:
-            flags = flags | 0b1000
+            flags |= PsdLayerMaskFlag.APPLIED
 
         data = psdformat.pack('iiii', *self.rectangle)
         data += psdformat.pack('B', 255 if self.default_color else 0)
@@ -1685,9 +1712,11 @@ class PsdLayerMask:
                 data += psdformat.pack('B', self.vector_mask_density)
             if self.vector_mask_feather is not None:
                 data += psdformat.pack('d', self.vector_mask_feather)
-            assert self.real_flags is not None
-            assert self.real_background is not None
-            assert self.real_rectangle is not None
+        if (
+            self.real_flags is not None
+            and self.real_background is not None
+            and self.real_rectangle is not None
+        ):
             data += psdformat.pack(
                 'BB4i',
                 self.real_flags,
@@ -1695,8 +1724,7 @@ class PsdLayerMask:
                 *self.real_rectangle,
             )
         else:
-            data += b'\0\0'
-            assert len(data) == 20
+            data += b'\0' * max(20 - len(data), len(data) % 2)
 
         return psdformat.pack('I', len(data)) + data
 
@@ -1777,7 +1805,7 @@ class PsdUserMask(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdUserMask:
+    ) -> Self:
         """Return instance from open file."""
         del key, length  # unused
         colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
@@ -1833,7 +1861,7 @@ class PsdFilterMask(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdFilterMask:
+    ) -> Self:
         """Return instance from open file."""
         del key, length  # unused
         colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
@@ -1873,12 +1901,7 @@ class PsdPatterns(PsdKeyABC):
     """Patterns (Photoshop 6.0 and CS 8.0)."""
 
     key: PsdKey
-    imagemode: PsdImageMode
-    name: str
-    guid: str
-    data: PsdVirtualMemoryArrayList
-    colortable: NDArray[numpy.uint8] | None = None
-    point: PsdPoint = field(default_factory=lambda: PsdPoint(0, 0))
+    patterns: list[PsdPattern] = field(default_factory=list)
 
     @classmethod
     def read(
@@ -1888,10 +1911,68 @@ class PsdPatterns(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdPatterns:
+    ) -> Self:
         """Return instance from open file."""
-        del length  # unused
-        _length, version = psdformat.read(fh, 'II')
+        end = fh.tell() + length
+        patterns = []
+        while end - fh.tell() >= 4:
+            patterns.append(PsdPattern.read(fh, psdformat))
+        return cls(key=key, patterns=patterns)
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write patterns to open file."""
+        written = 0
+        for pattern in self.patterns:
+            written += pattern.write(fh, psdformat)
+        return written
+
+    def __hash__(self) -> int:
+        return hash((self.key, tuple(self.patterns)))
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, self.__class__)
+            and self.key == other.key
+            and self.patterns == other.patterns
+        )
+
+    def __len__(self) -> int:
+        return len(self.patterns)
+
+    def __getitem__(self, key: int) -> PsdPattern:
+        return self.patterns[key]
+
+    def __setitem__(self, key: int, value: PsdPattern) -> None:
+        self.patterns[key] = value
+
+    def __iter__(self) -> Generator[PsdPattern]:
+        yield from self.patterns
+
+    def __repr__(self) -> str:
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'{enumstr(self.key)},',
+            reprlist('patterns', self.patterns),
+            end='\n)',
+        )
+
+
+@dataclass(repr=False)
+class PsdPattern:
+    """Pattern item of PsdPatterns."""
+
+    imagemode: PsdImageMode
+    name: str
+    guid: str
+    data: PsdVirtualMemoryArrayList
+    colortable: NDArray[numpy.uint8] | None = None
+    point: PsdPoint = field(default_factory=lambda: PsdPoint(0, 0))
+
+    @classmethod
+    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> Self:
+        """Return instance from open file."""
+        length, version = psdformat.read(fh, 'II')
+        end = fh.tell() - 4 + length
         assert version == 1
         imagemode = PsdImageMode(psdformat.read(fh, 'I'))
         point = PsdPoint(*psdformat.read(fh, 'hh'))
@@ -1906,8 +1987,10 @@ class PsdPatterns(PsdKeyABC):
 
         data = PsdVirtualMemoryArrayList.read(fh, psdformat)
 
+        # each pattern is padded to a multiple of 4 bytes
+        fh.seek(end + (4 - length % 4) % 4)
+
         return cls(
-            key=key,
             imagemode=imagemode,
             name=name,
             guid=guid,
@@ -1917,7 +2000,7 @@ class PsdPatterns(PsdKeyABC):
         )
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
-        """Write patterns to open file."""
+        """Write pattern to open file."""
         length_pos = fh.tell()
         psdformat.write(fh, 'I', 0)  # length placeholder
         pos = fh.tell()
@@ -1934,7 +2017,36 @@ class PsdPatterns(PsdKeyABC):
         fh.seek(length_pos)
         psdformat.write(fh, 'I', length)
         fh.seek(length, 1)
-        return length + 4
+        pad = fh.write(b'\0' * ((4 - length % 4) % 4))
+        return length + 4 + pad
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.imagemode,
+                self.name,
+                self.guid,
+                self.point,
+                self.data.rectangle,
+                tuple(self.data),
+                None if self.colortable is None else self.colortable.tobytes(),
+            )
+        )
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, self.__class__)
+            and self.imagemode == other.imagemode
+            and self.name == other.name
+            and self.guid == other.guid
+            and self.point == other.point
+            and self.data.rectangle == other.data.rectangle
+            and list(self.data) == list(other.data)
+            and numpy.array_equal(
+                [] if self.colortable is None else self.colortable,
+                [] if other.colortable is None else other.colortable,
+            )
+        )
 
     def asarray(self, *, planar: bool = False) -> NDArray[Any]:
         """Return channel image data."""
@@ -1963,7 +2075,6 @@ class PsdPatterns(PsdKeyABC):
             )
         return indent(
             f'{self.__class__.__name__}(',
-            f'key={enumstr(self.key)},',
             f'imagemode={enumstr(self.imagemode)},',
             f'name={self.name!r},',
             f'guid={self.guid!r},',
@@ -1990,7 +2101,7 @@ class PsdMetadataSettings(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdMetadataSettings:
+    ) -> Self:
         """Return metadata settings from open file."""
         del key, length  # unused
         count = psdformat.read(fh, 'I')
@@ -2001,16 +2112,15 @@ class PsdMetadataSettings(PsdKeyABC):
         """Write metadata settings to open file."""
         written = psdformat.write(fh, 'I', len(self.items))
         for item in self.items:
-            written = item.write(fh, psdformat)
+            written += item.write(fh, psdformat)
         return written
 
     def __repr__(self) -> str:
-        sz = len(self.items)
         if not self.items:
             return f'{self.__class__.__name__}()'
         return indent(
             f'{self.__class__.__name__}(',
-            f'items=[  # {sz}\n    {indent(*self.items, sep=",")},\n],',
+            reprlist('items', self.items),
             end='\n)',
         )
 
@@ -2025,7 +2135,7 @@ class PsdMetadataSetting:
     copyonsheet: bool = False
 
     @classmethod
-    def read(cls, fh: BinaryIO, psdformat: PsdFormat) -> PsdMetadataSetting:
+    def read(cls, fh: BinaryIO, psdformat: PsdFormat) -> Self:
         """Return metadata setting from open file."""
         signature = PsdFormat(fh.read(4))
         # assert signature in (b'8BIM', b'MIB8')
@@ -2092,9 +2202,7 @@ class PsdVirtualMemoryArrayList:
     channels: list[PsdVirtualMemoryArray] = field(default_factory=list)
 
     @classmethod
-    def read(
-        cls, fh: BinaryIO, psdformat: PsdFormat, /
-    ) -> PsdVirtualMemoryArrayList:
+    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> Self:
         """Return instance from open file."""
         version = psdformat.read(fh, 'I')
         assert version == 3
@@ -2140,11 +2248,10 @@ class PsdVirtualMemoryArrayList:
         yield from self.channels
 
     def __repr__(self) -> str:
-        sz = len(self.channels)
         return indent(
             f'{self.__class__.__name__}(',
             f'rectangle={self.rectangle},',
-            f'channels=[  # {sz}\n    {indent(*self.channels, sep=",")},\n],',
+            reprlist('channels', self.channels),
             end='\n)',
         )
 
@@ -2161,9 +2268,7 @@ class PsdVirtualMemoryArray:
     data: NDArray[Any] | None = None
 
     @classmethod
-    def read(
-        cls, fh: BinaryIO, psdformat: PsdFormat, /
-    ) -> PsdVirtualMemoryArray:
+    def read(cls, fh: BinaryIO, psdformat: PsdFormat, /) -> Self:
         """Return instance from open file."""
         iswritten = bool(psdformat.read(fh, 'I'))
         if not iswritten:
@@ -2320,7 +2425,7 @@ class PsdSectionDividerSetting(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdSectionDividerSetting:
+    ) -> Self:
         """Return instance from open file."""
         del key  # unused
         kind = PsdSectionDividerType(psdformat.read(fh, 'I'))
@@ -2328,7 +2433,7 @@ class PsdSectionDividerSetting(PsdKeyABC):
             return cls(kind=kind)
         signature = fh.read(4)
         assert signature in (b'8BIM', b'MIB8')
-        blendmode = PsdBlendMode(fh.read(4))
+        blendmode = PsdBlendMode(psdformat.read_signature(fh))
         if length < 16:
             return cls(kind=kind, blendmode=blendmode)
         subtype = psdformat.read(fh, 'I')
@@ -2371,7 +2476,7 @@ class PsdSheetColorSetting(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdSheetColorSetting:
+    ) -> Self:
         """Return instance from open file."""
         del key, length  # unused
         color = PsdColorType(psdformat.read(fh, 'H6x'))
@@ -2402,10 +2507,11 @@ class PsdReferencePoint(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdReferencePoint:
+    ) -> Self:
         """Return instance from open file."""
         del key, length  # unused
-        return cls(*psdformat.read(fh, 'dd'))
+        x, y = psdformat.read(fh, 'dd')
+        return cls(x=x, y=y)
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write reference point to open file."""
@@ -2433,7 +2539,7 @@ class PsdExposure(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdExposure:
+    ) -> Self:
         """Return exposure from open file."""
         del key, length  # unused
         version, exposure, offset, gamma = psdformat.read(fh, 'Hfff')
@@ -2458,7 +2564,7 @@ class PsdExposure(PsdKeyABC):
 
 @dataclass(repr=False)
 class PsdTextEngineData(PsdKeyABC):
-    """Text Engine Data (Photoshop CS3)."""
+    """Text engine data (Photoshop CS3)."""
 
     data: bytes
     key = PsdKey.TEXT_ENGINE_DATA
@@ -2471,7 +2577,7 @@ class PsdTextEngineData(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdTextEngineData:
+    ) -> Self:
         """Return instance from open file."""
         del key  # unused
         length = psdformat.read(fh, 'I')
@@ -2508,7 +2614,7 @@ class PsdString(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdString:
+    ) -> Self:
         """Return instance from open file."""
         del length  # unused
         value = str(PsdUnicodeString.read(fh, psdformat))
@@ -2544,7 +2650,7 @@ class PsdBoolean(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdBoolean:
+    ) -> Self:
         """Return instance from open file."""
         del psdformat, length  # unused
         value = bool(fh.read(1)[0])
@@ -2578,7 +2684,7 @@ class PsdInteger(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdInteger:
+    ) -> Self:
         """Return instance from open file."""
         del length  # unused
         value = psdformat.read(fh, 'i')
@@ -2607,7 +2713,7 @@ class PsdWord(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdWord:
+    ) -> Self:
         """Return instance from open file."""
         del psdformat, length  # unused
         return cls(key=key, value=fh.read(4))
@@ -2634,7 +2740,7 @@ class PsdUnknown(PsdKeyABC):
     @classmethod
     def frombytes(
         cls, data: bytes, psdformat: PsdFormat, key: PsdKey, /
-    ) -> PsdUnknown:
+    ) -> Self:
         """Return instance from bytes."""
         return cls(key=key, psdformat=psdformat, value=data)
 
@@ -2646,20 +2752,20 @@ class PsdUnknown(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdUnknown:
+    ) -> Self:
         """Return instance from open file."""
         return cls(key=key, psdformat=psdformat, value=fh.read(length))
 
     def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
         """Write opaque binary value to open file."""
-        if len(self.value) <= 1 or self.psdformat != psdformat:
+        if len(self.value) > 1 and self.psdformat != psdformat:
             msg = f'can not write opaque bytes as {psdformat}'
             raise ValueError(msg)
         return fh.write(self.value)
 
     def tobytes(self, psdformat: PsdFormat, /) -> bytes:
         """Return opaque binary value."""
-        if len(self.value) <= 1 or self.psdformat != psdformat:
+        if len(self.value) > 1 and self.psdformat != psdformat:
             msg = f'can not write opaque bytes as {psdformat}'
             raise ValueError(msg)
         return self.value
@@ -2669,7 +2775,7 @@ class PsdUnknown(PsdKeyABC):
             (
                 self.key,
                 self.value,
-                self.psdformat if len(self.value) > 0 else 1,
+                self.psdformat if len(self.value) > 1 else 1,
             )
         )
 
@@ -2688,11 +2794,15 @@ class PsdUnknown(PsdKeyABC):
             value = f'value={self.value!r},'
         return indent(
             f'{self.__class__.__name__}(',
-            f'key={enumstr(self.key)},',
+            f'{enumstr(self.key)},',
             f'psdformat={enumstr(self.psdformat)},',
             value,
             end='\n)',
         )
+
+
+class PsdDescriptor(PsdUnknown):
+    """Descriptor structure stored as opaque bytes."""
 
 
 @dataclass(repr=False)
@@ -2709,7 +2819,7 @@ class PsdEmpty(PsdKeyABC):
         key: PsdKey,
         /,
         length: int,
-    ) -> PsdEmpty:
+    ) -> Self:
         """Return instance from open file."""
         del fh, psdformat  # unused
         assert length == 0
@@ -2718,7 +2828,7 @@ class PsdEmpty(PsdKeyABC):
     @classmethod
     def frombytes(
         cls, data: bytes, psdformat: PsdFormat, key: PsdKey, /
-    ) -> PsdEmpty:
+    ) -> Self:
         """Return instance from bytes."""
         del psdformat  # unused
         assert len(data) == 0
@@ -2754,7 +2864,7 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
         /,
         name: str,
         length: int,
-    ) -> PsdResourceBlockABC:
+    ) -> Self:
         """Return instance from open file."""
 
     @classmethod
@@ -2765,7 +2875,7 @@ class PsdResourceBlockABC(metaclass=abc.ABCMeta):
         resourceid: PsdResourceId,
         /,
         name: str,
-    ) -> PsdResourceBlockABC:
+    ) -> Self:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
             return cls.read(
@@ -2806,7 +2916,7 @@ class PsdBytesBlock(PsdResourceBlockABC):
         /,
         name: str,
         length: int,
-    ) -> PsdBytesBlock:
+    ) -> Self:
         """Return instance from open file."""
         del psdformat  # unused
         value = fh.read(length)
@@ -2819,12 +2929,14 @@ class PsdBytesBlock(PsdResourceBlockABC):
 
     def __repr__(self) -> str:
         if len(self.value) > REPR_MAXLEN:
-            value = f'value=...,  # bytes({len(self.value)})'
+            value = f'...,  # bytes({len(self.value)})'
         else:
-            value = f'value={self.value!r},'
+            value = f'{self.value!r},'
+        if self.name:
+            value = f'value={value}'
         return indent(
             f'{self.__class__.__name__}(',
-            f'resourceid={enumstr(self.resourceid)},',
+            f'{enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
             value,
             end='\n)',
@@ -2852,7 +2964,7 @@ class PsdVersionBlock(PsdResourceBlockABC):
         /,
         name: str,
         length: int,
-    ) -> PsdVersionBlock:
+    ) -> Self:
         """Return instance from open file."""
         del length  # unused
         version = psdformat.read(fh, 'I')
@@ -2883,7 +2995,7 @@ class PsdVersionBlock(PsdResourceBlockABC):
     def __repr__(self) -> str:
         return indent(
             f'{self.__class__.__name__}(',
-            f'resourceid={enumstr(self.resourceid)},',
+            f'{enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
             f'version={self.version},',
             f'file_version={self.file_version},',
@@ -2911,7 +3023,7 @@ class PsdStringBlock(PsdResourceBlockABC):
         /,
         name: str,
         length: int,
-    ) -> PsdStringBlock:
+    ) -> Self:
         """Return instance from open file."""
         del length  # unused
         value = str(PsdUnicodeString.read(fh, psdformat))
@@ -2924,7 +3036,7 @@ class PsdStringBlock(PsdResourceBlockABC):
     def __repr__(self) -> str:
         return indent(
             f'{self.__class__.__name__}(',
-            f'resourceid={enumstr(self.resourceid)},',
+            f'{enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
             f'value={self.value!r},',
             end='\n)',
@@ -2948,7 +3060,7 @@ class PsdStringsBlock(PsdResourceBlockABC):
         /,
         name: str,
         length: int,
-    ) -> PsdStringsBlock:
+    ) -> Self:
         """Return instance from open file."""
         values = []
         pos = fh.tell()
@@ -2964,13 +3076,11 @@ class PsdStringsBlock(PsdResourceBlockABC):
         return written
 
     def __repr__(self) -> str:
-        values = tuple(f"'{v}'" for v in self.values)
-        sz = len(values)
         return indent(
             f'{self.__class__.__name__}(',
-            f'resourceid={enumstr(self.resourceid)},',
+            f'{enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
-            f'values=[  # {sz}\n    {indent(*values, sep=",")},\n],',
+            reprlist('values', [repr(v) for v in self.values]),
             end='\n)',
         )
 
@@ -2992,7 +3102,7 @@ class PsdPascalStringBlock(PsdResourceBlockABC):
         /,
         name: str,
         length: int,
-    ) -> PsdPascalStringBlock:
+    ) -> Self:
         """Return instance from open file."""
         del psdformat, length  # unused
         value = str(PsdPascalString.read(fh, pad=2))
@@ -3006,7 +3116,7 @@ class PsdPascalStringBlock(PsdResourceBlockABC):
     def __repr__(self) -> str:
         return indent(
             f'{self.__class__.__name__}(',
-            f'resourceid={enumstr(self.resourceid)},',
+            f'{enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
             f'value={self.value!r},',
             end='\n)',
@@ -3030,7 +3140,7 @@ class PsdPascalStringsBlock(PsdResourceBlockABC):
         /,
         name: str,
         length: int,
-    ) -> PsdPascalStringsBlock:
+    ) -> Self:
         """Return instance from open file."""
         del psdformat  # unused
         values = []
@@ -3048,13 +3158,11 @@ class PsdPascalStringsBlock(PsdResourceBlockABC):
         return written
 
     def __repr__(self) -> str:
-        values = tuple(f"'{v}'" for v in self.values)
-        sz = len(values)
         return indent(
             f'{self.__class__.__name__}(',
-            f'resourceid={enumstr(self.resourceid)},',
+            f'{enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
-            f'values=[  # {sz}\n    {indent(*values, sep=",")},\n],',
+            reprlist('values', [repr(v) for v in self.values]),
             end='\n)',
         )
 
@@ -3077,7 +3185,7 @@ class PsdColorBlock(PsdResourceBlockABC):
         /,
         name: str,
         length: int,
-    ) -> PsdColorBlock:
+    ) -> Self:
         """Return instance from open file."""
         del length  # unused
         colorspace = PsdColorSpaceType(psdformat.read(fh, 'h'))
@@ -3098,7 +3206,7 @@ class PsdColorBlock(PsdResourceBlockABC):
     def __repr__(self) -> str:
         return indent(
             f'{self.__class__.__name__}(',
-            f'resourceid={enumstr(self.resourceid)},',
+            f'{enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
             f'colorspace={enumstr(self.colorspace)},',
             f'components={self.components},',
@@ -3126,7 +3234,7 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
         /,
         name: str,
         length: int,
-    ) -> PsdThumbnailBlock:
+    ) -> Self:
         """Return instance from open file."""
         (
             fmt,
@@ -3190,12 +3298,16 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
             data = data[:, : self.width * 3]
             data = data.reshape((self.height, self.width, 3))
         elif self.format == PsdThumbnailFormat.JPEG_RGB:
-            from imagecodecs import jpeg8_decode
+            from imagecodecs import jpeg_decode
 
-            data = jpeg8_decode(self.rawdata)
-            assert data.shape == (self.height, self.width, 3)
+            data = jpeg_decode(self.rawdata)
+            assert data.shape == (  # type: ignore[comparison-overlap]
+                self.height,
+                self.width,
+                3,
+            )
         else:
-            msg = f'unknown PsdThumbnailBlock {format=!r}'
+            msg = f'unknown PsdThumbnailBlock format={self.format!r}'
             raise ValueError(msg)
         return data
 
@@ -3207,12 +3319,54 @@ class PsdThumbnailBlock(PsdResourceBlockABC):
     def __repr__(self) -> str:
         return indent(
             f'{self.__class__.__name__}(',
-            f'resourceid={enumstr(self.resourceid)},',
+            f'{enumstr(self.resourceid)},',
             f'name={self.name!r},' if self.name else '',
             f'format={enumstr(self.format)},',
             f'width={self.width},',
             f'height={self.height},',
             f'rawdata=...,  # bytes({len(self.rawdata)})',
+            end='\n)',
+        )
+
+
+@dataclass(repr=False)
+class PsdDescriptorBlock(PsdResourceBlockABC):
+    """Descriptor resource stored as opaque bytes."""
+
+    resourceid: PsdResourceId
+    value: bytes
+    name: str = ''
+
+    @classmethod
+    def read(
+        cls,
+        fh: BinaryIO,
+        psdformat: PsdFormat,
+        resourceid: PsdResourceId,
+        /,
+        name: str,
+        length: int,
+    ) -> Self:
+        """Return instance from open file."""
+        del psdformat
+        value = fh.read(length)
+        return cls(resourceid=resourceid, name=name, value=value)
+
+    def write(self, fh: BinaryIO, psdformat: PsdFormat, /) -> int:
+        """Write instance values to open file."""
+        del psdformat
+        return fh.write(self.value)
+
+    def __repr__(self) -> str:
+        if len(self.value) > REPR_MAXLEN:
+            value = f'...,  # bytes({len(self.value)})'
+        else:
+            value = f'{self.value!r},'
+        return indent(
+            f'{self.__class__.__name__}(',
+            f'{enumstr(self.resourceid)},',
+            f'name={self.name!r},' if self.name else '',
+            f'value={value}' if self.name else value,
             end='\n)',
         )
 
@@ -3232,7 +3386,7 @@ class TiffImageSourceData:
     @classmethod
     def read(
         cls, fh: BinaryIO, /, name: str | None = None, *, unknown: bool = True
-    ) -> TiffImageSourceData:
+    ) -> Self:
         """Return instance from open file."""
         name = type(fh).__name__ if name is None else name
 
@@ -3257,7 +3411,7 @@ class TiffImageSourceData:
         info: list[PsdKeyABC] = []
 
         while fh.read(4) == psdformat:
-            key = PsdKey(fh.read(4))
+            key = PsdKey(psdformat.read_signature(fh))
             size = psdformat.read_size(fh, key)
             pos = fh.tell()
 
@@ -3269,16 +3423,10 @@ class TiffImageSourceData:
                 )
             elif key == PsdKey.USER_MASK and usermask is None:
                 usermask = PsdUserMask.read(fh, psdformat, key, length=size)
-            elif key in PSD_KEY_TYPE:
-                info.append(
-                    PSD_KEY_TYPE[key].read(fh, psdformat, key, length=size)
-                )
-            elif unknown:
-                info.append(PsdUnknown.read(fh, psdformat, key, length=size))
-                # logger().warning(
-                #     f"<TiffImageSourceData '{name}'> skipped {size} bytes "
-                #     f"in {key.value.decode()!r} info"
-                # )
+            else:
+                tagtype = PSD_KEY_TYPE.get(key, PsdUnknown)
+                if unknown or not issubclass(tagtype, PsdUnknown):
+                    info.append(tagtype.read(fh, psdformat, key, length=size))
             size += (4 - size % 4) % 4
             fh.seek(pos + size)
 
@@ -3301,7 +3449,7 @@ class TiffImageSourceData:
     @classmethod
     def frombytes(
         cls, data: bytes, /, *, name: str | None = None, unknown: bool = True
-    ) -> TiffImageSourceData:
+    ) -> Self:
         """Return instance from bytes."""
         with io.BytesIO(data) as fh:
             return cls.read(fh, name=name, unknown=unknown)
@@ -3314,7 +3462,7 @@ class TiffImageSourceData:
         *,
         pageindex: int = 0,
         unknown: bool = True,
-    ) -> TiffImageSourceData:
+    ) -> Self:
         """Return instance from TIFF file."""
         data = read_tifftag(filename, 37724, pageindex=pageindex)
         if data is None:
@@ -3343,7 +3491,7 @@ class TiffImageSourceData:
         # https://github.com/cgohlke/psdtags/issues/17
         first: list[PsdKeyABC] = []
         info = self.info.copy()
-        if info and info[0].key in {
+        if info and info[0].key in {  # noqa: FURB171
             PsdKey.SAVING_MERGED_TRANSPARENCY2,
         }:
             first.append(info.pop(0))
@@ -3422,14 +3570,13 @@ class TiffImageSourceData:
         return bool(self.layers) or len(self.info) > 1
 
     def __repr__(self) -> str:
-        sz = len(self.info)
         return indent(
             f'{self.__class__.__name__}(',
             f'name={self.name!r},' if self.name else '',
             f'psdformat={enumstr(self.psdformat)},',
             f'layers={self.layers},',
             f'usermask={self.usermask},',
-            f'info=[  # {sz}\n    {indent(*self.info, sep=",")},\n],',
+            reprlist('info', self.info),
             end='\n)',
         )
 
@@ -3443,9 +3590,7 @@ class TiffImageResources:
     name: str | None = None
 
     @classmethod
-    def read(
-        cls, fh: BinaryIO, length: int, name: str | None = None
-    ) -> TiffImageResources:
+    def read(cls, fh: BinaryIO, length: int, name: str | None = None) -> Self:
         """Return instance from open file."""
         filename = type(fh).__name__ if name is None else name
         blocks = read_psdblocks(fh, length=length)
@@ -3457,9 +3602,7 @@ class TiffImageResources:
         )
 
     @classmethod
-    def frombytes(
-        cls, data: bytes, name: str | None = None
-    ) -> TiffImageResources:
+    def frombytes(cls, data: bytes, name: str | None = None) -> Self:
         """Return instance from ImageResources tag value."""
         with io.BytesIO(data) as fh:
             return cls.read(fh, length=len(data), name=name)
@@ -3467,7 +3610,7 @@ class TiffImageResources:
     @classmethod
     def fromtiff(
         cls, filename: os.PathLike[Any] | str, /, pageindex: int = 0
-    ) -> TiffImageResources:
+    ) -> Self:
         """Return instance from ImageResources tag in TIFF file."""
         data = read_tifftag(filename, 34377, pageindex=pageindex)
         if data is None:
@@ -3537,12 +3680,11 @@ class TiffImageResources:
         yield from self.blocks
 
     def __repr__(self) -> str:
-        sz = len(self.blocks)
         return indent(
             f'{self.__class__.__name__}(',
             f'name={self.name!r},' if self.name else '',
             f'psdformat={enumstr(self.psdformat)},',
-            f'blocks=[  # {sz}\n    {indent(*self.blocks, sep=",")},\n],',
+            reprlist('blocks', self.blocks),
             end='\n)',
         )
 
@@ -3569,6 +3711,23 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     PsdKey.BLEND_CLIPPING_ELEMENTS: PsdBoolean,
     PsdKey.BLEND_INTERIOR_ELEMENTS: PsdBoolean,
     PsdKey.KNOCKOUT_SETTING: PsdBoolean,
+    PsdKey.ANIMATION_EFFECTS: PsdDescriptor,
+    PsdKey.ARTBOARD_DATA: PsdDescriptor,
+    PsdKey.ARTBOARD_DATA_2: PsdDescriptor,
+    PsdKey.ARTBOARD_DATA_3: PsdDescriptor,
+    PsdKey.BLACK_AND_WHITE: PsdDescriptor,
+    PsdKey.COMPOSITOR_USED: PsdDescriptor,
+    PsdKey.CONTENT_GENERATOR_EXTRA_DATA: PsdDescriptor,
+    PsdKey.GRADIENT_FILL_SETTING: PsdDescriptor,
+    PsdKey.PATTERN_FILL_SETTING: PsdDescriptor,
+    PsdKey.PIXEL_SOURCE_DATA: PsdDescriptor,
+    PsdKey.SMART_OBJECT_LAYER_DATA: PsdDescriptor,
+    PsdKey.SOLID_COLOR_SHEET_SETTING: PsdDescriptor,
+    PsdKey.UNICODE_PATH_NAME: PsdDescriptor,
+    PsdKey.VECTOR_ORIGINATION_DATA: PsdDescriptor,
+    PsdKey.VECTOR_STROKE_CONTENT_DATA: PsdDescriptor,
+    PsdKey.VECTOR_STROKE_DATA: PsdDescriptor,
+    PsdKey.VIBRANCE: PsdDescriptor,
     PsdKey.PATT: PsdEmpty,
     PsdKey.SAVING_MERGED_TRANSPARENCY: PsdEmpty,
     PsdKey.SAVING_MERGED_TRANSPARENCY2: PsdEmpty,
@@ -3576,6 +3735,7 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     PsdKey.SAVING_MERGED_TRANSPARENCY_32: PsdEmpty,
     PsdKey.EXPOSURE: PsdExposure,
     PsdKey.FILTER_MASK: PsdFilterMask,
+    PsdKey.FILL_OPACITY: PsdInteger,
     PsdKey.LAYER_ID: PsdInteger,
     PsdKey.LAYER_VERSION: PsdInteger,
     PsdKey.PROTECTED_SETTING: PsdInteger,
@@ -3583,7 +3743,6 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     PsdKey.LAYER: PsdLayers,
     PsdKey.LAYER_16: PsdLayers,
     PsdKey.LAYER_32: PsdLayers,
-    PsdKey.LINKED_LAYER_EXTERNAL: PsdLayers,
     PsdKey.METADATA_SETTING: PsdMetadataSettings,
     PsdKey.PATTERNS: PsdPatterns,
     PsdKey.PATTERNS_2: PsdPatterns,
@@ -3602,28 +3761,19 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     PsdKey.VECTOR_MASK_AS_GLOBAL_MASK: PsdWord,
     # TODO:
     # PsdKey.ALPHA: PsdUnknown,
-    # PsdKey.ANIMATION_EFFECTS: PsdUnknown,
     # PsdKey.ANNOTATIONS: PsdUnknown,
-    # PsdKey.ARTBOARD_DATA: PsdUnknown,
-    # PsdKey.ARTBOARD_DATA_2: PsdUnknown,
-    # PsdKey.ARTBOARD_DATA_3: PsdUnknown,
-    # PsdKey.BLACK_AND_WHITE: PsdUnknown,
     # PsdKey.BRIGHTNESS_AND_CONTRAST: PsdUnknown,
     # PsdKey.CAI: PsdUnknown,
     # PsdKey.CHANNEL_BLENDING_RESTRICTIONS_SETTING: PsdUnknown,
     # PsdKey.CHANNEL_MIXER: PsdUnknown,
     # PsdKey.COLOR_BALANCE: PsdUnknown,
     # PsdKey.COLOR_LOOKUP: PsdUnknown,
-    # PsdKey.COMPOSITOR_USED: PsdUnknown,
-    # PsdKey.CONTENT_GENERATOR_EXTRA_DATA: PsdUnknown,
     # PsdKey.CURVES: PsdUnknown,
     # PsdKey.EFFECTS_LAYER: PsdUnknown,
-    # PsdKey.FILL_OPACITY: PsdUnknown,
     # PsdKey.FILTER_EFFECTS: PsdUnknown,
     # PsdKey.FILTER_EFFECTS_2: PsdUnknown,
     # PsdKey.FRAMED_GROUP: PsdUnknown,
     # PsdKey.GENI: PsdUnknown,
-    # PsdKey.GRADIENT_FILL_SETTING: PsdUnknown,
     # PsdKey.GRADIENT_MAP: PsdUnknown,
     # PsdKey.HUE_SATURATION: PsdUnknown,
     # PsdKey.HUE_SATURATION_PS4: PsdUnknown,
@@ -3632,32 +3782,23 @@ PSD_KEY_TYPE: dict[PsdKey, type[PsdKeyABC]] = {
     # PsdKey.LINKED_LAYER: PsdUnknown,
     # PsdKey.LINKED_LAYER_2: PsdUnknown,
     # PsdKey.LINKED_LAYER_3: PsdUnknown,
+    # PsdKey.LINKED_LAYER_EXTERNAL: PsdUnknown,
     # PsdKey.OBJECT_BASED_EFFECTS_LAYER_INFO: PsdUnknown,
     # PsdKey.OCIO: PsdUnknown,
     # PsdKey.PATTERN_DATA: PsdUnknown,
-    # PsdKey.PATTERN_FILL_SETTING: PsdUnknown,
     # PsdKey.PHOTO_FILTER: PsdUnknown,
-    # PsdKey.PIXEL_SOURCE_DATA: PsdUnknown,
     # PsdKey.PIXEL_SOURCE_DATA_CC15: PsdUnknown,
     # PsdKey.PLACED_LAYER: PsdUnknown,
     # PsdKey.PLACED_LAYER_CS3: PsdUnknown,
     # PsdKey.POSTERIZE: PsdUnknown,
     # PsdKey.SELECTIVE_COLOR: PsdUnknown,
-    # PsdKey.SMART_OBJECT_LAYER_DATA: PsdUnknown,
     # PsdKey.SMART_OBJECT_LAYER_DATA_CC15: PsdUnknown,
-    # PsdKey.SOLID_COLOR_SHEET_SETTING: PsdUnknown,
     # PsdKey.THRESHOLD: PsdUnknown,
     # PsdKey.TYPE_TOOL_INFO: PsdUnknown,
     # PsdKey.TYPE_TOOL_OBJECT_SETTING: PsdUnknown,
-    # PsdKey.UNICODE_PATH_NAME: PsdUnknown,
     # PsdKey.VECTOR_MASK_SETTING: PsdUnknown,
     # PsdKey.VECTOR_MASK_SETTING_CS6: PsdUnknown,
-    # PsdKey.VECTOR_ORIGINATION_DATA: PsdUnknown,
-    # PsdKey.VECTOR_STROKE_CONTENT_DATA: PsdUnknown,
-    # PsdKey.VECTOR_STROKE_DATA: PsdUnknown,
-    # PsdKey.VIBRANCE: PsdUnknown,
 }
-
 
 PSD_RESOURCE_TYPE: dict[PsdResourceId, type[PsdResourceBlockABC]] = {
     PsdResourceId.ALPHA_NAMES_PASCAL: PsdPascalStringsBlock,
@@ -3670,6 +3811,17 @@ PSD_RESOURCE_TYPE: dict[PsdResourceId, type[PsdResourceBlockABC]] = {
     PsdResourceId.THUMBNAIL_RESOURCE: PsdThumbnailBlock,
     PsdResourceId.VERSION_INFO: PsdVersionBlock,
     PsdResourceId.BACKGROUND_COLOR: PsdColorBlock,
+    PsdResourceId.CAPTION_DIGEST: PsdBytesBlock,  # MD5 16 bytes
+    PsdResourceId.LAYER_COMPS: PsdDescriptorBlock,
+    PsdResourceId.MEASUREMENT_SCALE: PsdDescriptorBlock,
+    PsdResourceId.TIMELINE_INFO: PsdDescriptorBlock,
+    PsdResourceId.SHEET_DISCLOSURE: PsdDescriptorBlock,
+    PsdResourceId.ONION_SKINS: PsdDescriptorBlock,
+    PsdResourceId.COUNT_INFO: PsdDescriptorBlock,
+    PsdResourceId.PRINT_INFO_CS5: PsdDescriptorBlock,
+    PsdResourceId.PRINT_STYLE: PsdDescriptorBlock,
+    PsdResourceId.PATH_SELECTION_STATE: PsdDescriptorBlock,
+    PsdResourceId.ORIGIN_PATH_INFO: PsdDescriptorBlock,
 }
 
 
@@ -3729,17 +3881,15 @@ def read_psdtags(
     tags: list[PsdKeyABC] = []
     end = fh.tell() + length
     while fh.tell() < end and fh.read(4) == psdformat:
-        key = PsdKey(fh.read(4))
+        key = PsdKey(psdformat.read_signature(fh))
         size = psdformat.read_size(fh, key)
         pos = fh.tell()
         if size == 0:
             tags.append(PsdEmpty(key))
-        elif key in PSD_KEY_TYPE:
-            tags.append(
-                PSD_KEY_TYPE[key].read(fh, psdformat, key, length=size)
-            )
-        elif unknown:
-            tags.append(PsdUnknown.read(fh, psdformat, key, length=size))
+        else:
+            tagtype = PSD_KEY_TYPE.get(key, PsdUnknown)
+            if unknown or not issubclass(tagtype, PsdUnknown):
+                tags.append(tagtype.read(fh, psdformat, key, length=size))
         size += (align - size % align) % align
         fh.seek(pos + size)
     return tags
@@ -3765,9 +3915,10 @@ def write_psdtags(
         if isinstance(tag, PsdUnknown):
             if not unknown:
                 continue
-            if tag.psdformat != psdformat:
+            if len(tag.value) > 1 and tag.psdformat != psdformat:
                 logger().warning(
-                    f'<PsdUnknown {tag.key.value.decode()!r}> not written'
+                    f'<{tag.__class__.__name__} '
+                    f'{tag.key.value.decode()!r}> not written'
                 )
                 continue
         fh.write(psdformat.value)
@@ -3849,7 +4000,7 @@ def compress(
 
 
 def decompress(
-    data: bytes | bytearray,
+    data: bytes | bytearray | memoryview,
     compression: PsdCompressionType,
     shape: tuple[int, ...],
     dtype: DTypeLike,
@@ -3880,7 +4031,7 @@ def decompress(
         image = numpy.frombuffer(data, dtype=dtype).reshape(shape)
         if dtype.kind == 'f':
             return imagecodecs.floatpred_decode(image)
-        return imagecodecs.delta_decode(image)
+        return imagecodecs.delta_decode(image)  # type: ignore[no-any-return]
 
     if compression == PsdCompressionType.RLE:
         import imagecodecs
@@ -4009,6 +4160,13 @@ def indent(*args: Any, sep: str = '', end: str = '') -> str:
     )
 
 
+def reprlist(name: str, items: Sequence[Any], /) -> str:
+    """Return keyword argument representation of list of objects."""
+    if not items:
+        return f'{name}=[],'
+    return f'{name}=[  # {len(items)}\n    {indent(*items, sep=",")},\n],'
+
+
 def enumstr(v: enum.Enum | None, /) -> str:
     """Return IntEnum or IntFlag as str."""
     # repr() and str() of enums are type, value, and version dependent
@@ -4029,6 +4187,7 @@ def enumstr(v: enum.Enum | None, /) -> str:
 
 def test(*, verbose: bool = False) -> None:
     """Test TiffImageSourceData and TiffImageResources classes."""
+    import ast
     from glob import glob
 
     import imagecodecs
@@ -4045,14 +4204,14 @@ def test(*, verbose: bool = False) -> None:
     for filename in glob('tests/data/*.tif'):
         if read_tifftag(filename, 34377) is not None:
             res1 = TiffImageResources.fromtiff(filename)
-            assert str(res1)
+            ast.parse(repr(res1), mode='eval')
             if verbose:
                 print(res1, '\n')  # noqa: T201
             res2 = TiffImageResources.frombytes(res1.tobytes())
             assert res1 == res2, (filename, res1, res2)
 
         isd1 = TiffImageSourceData.fromtiff(filename)
-        assert str(isd1)
+        ast.parse(repr(isd1), mode='eval')
         if verbose:
             print(isd1, '\n')  # noqa: T201
 
@@ -4067,13 +4226,15 @@ def test(*, verbose: bool = False) -> None:
         # test roundtrips of psdformat and compression
         for psdformat in PsdFormat:
             unknown = has_unknown and psdformat == isd1.psdformat
-            if not unknown:
-                isd1 = TiffImageSourceData.fromtiff(filename, unknown=False)
+            if unknown or not has_unknown:
+                isd0 = isd1
+            else:
+                isd0 = TiffImageSourceData.fromtiff(filename, unknown=False)
             for compression in PsdCompressionType:
                 if compression == PsdCompressionType.UNKNOWN:
                     continue
                 print('.', end='', flush=True)  # noqa: T201
-                buffer = isd1.tobytes(
+                buffer = isd0.tobytes(
                     psdformat=psdformat,
                     compression=compression,
                     unknown=unknown,
@@ -4083,13 +4244,13 @@ def test(*, verbose: bool = False) -> None:
                 str(isd2)
                 if isd2:
                     assert isd2.psdformat == psdformat
-                assert isd1 == isd2, (filename, isd1, isd2)
+                assert isd0 == isd2, (filename, isd0, isd2)
                 # test not equal after changing data
                 if isd2.layers:
                     ch0 = isd2.layers[0].channels[0].data
                     if ch0 is not None and ch0.size > 0:
                         ch0[..., 0] = 123
-                        assert isd1 != isd2, (filename, isd1, isd2)
+                        assert isd0 != isd2, (filename, isd0, isd2)
 
         # test tifftag value
         tagid, dtype, size, tagvalue, writeonce = isd1.tifftag()
@@ -4187,6 +4348,25 @@ def main(argv: list[str] | None = None) -> int:
             continue
     return 0
 
+
+if os.environ.get('PSDTAGS_DESCRIPTOR_PARSING') in {'1', 'true', 'True'}:
+    PsdDescriptorOpaque = PsdDescriptor
+    PsdDescriptorBlockOpaque = PsdDescriptorBlock
+
+    from .descriptor import (  # type: ignore[assignment]
+        PsdDescriptor,
+        PsdDescriptorBlock,
+    )
+
+    for key, keytype in PSD_KEY_TYPE.items():
+        if keytype is PsdDescriptorOpaque:
+            PSD_KEY_TYPE[key] = PsdDescriptor
+
+    for resourceid, blocktype in PSD_RESOURCE_TYPE.items():
+        if blocktype is PsdDescriptorBlockOpaque:
+            PSD_RESOURCE_TYPE[resourceid] = PsdDescriptorBlock
+
+    del key, keytype, resourceid, blocktype
 
 if __name__ == '__main__':
     sys.exit(main())
