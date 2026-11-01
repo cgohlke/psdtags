@@ -1,5 +1,24 @@
+..
+  This file is updated by setup.py. Do not edit.
+
 Revisions
----------
+=========
+
+2026.11.1
+
+- Store multiple patterns in PsdPatterns, add PsdPattern class (breaking).
+- Return pseudo-members for undefined enum values (breaking).
+- Add PsdDescriptor and PsdDescriptorBlock opaque structures.
+- Add experimental PsdDescriptor and PsdDescriptorBlock parsing.
+- Skip opaque descriptors if unknown is False.
+- Fix unknown keys overwriting each other or being reversed.
+- Fix reading layer mask parameters and real user mask channel.
+- Fix reading LINKED_LAYER_EXTERNAL key.
+- Fix writing short PsdUnknown values.
+- Fix PsdMetadataSettings.write return value.
+- Replace PsdLayer.mask None with empty PsdLayerMask.
+- Drop support for Python 3.11 and numpy 2.1.
+- Support Python 3.15.
 
 2026.1.29
 
